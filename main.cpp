@@ -1,9 +1,30 @@
-#include <bits/stdc++.h>
+#include <algorithm>
+#include <iostream>
+#include <fstream>
+#include <numeric>
+#include <vector>
+#include <string>
+#include <set>
+
+#include <cstdio>
+#include <cmath>
+
+// TODO: citati iz .names datoteka i postaviti sve da radi za generic dataset
+// TODO: dodati AUC i f-measure
+// TODO: kad su vrijednosti continuous, podijeli u N buckets umjesto svih mogucih vrijednosti
+// TODO: figure out multi-class hellinger distance
+// TODO: dodaj commandline arguments
+// TODO: dodaj cross validation
+// TODO: fixati apsolutno sve da nije ovako fugly (npr don't mix iostream and stdio)
+// TODO: nemoj koristiti std::vector nego napravi nesto svoje sto ce imati countove potrebne za hellingera
+// TODO: dodaj grid search za hiperparametre
+// TODO: dodaj mogucnost spremanja stvorenog stabla
 
 const float TRAIN_TO_TEST_RATIO = 0.70f;
 const int SEED = 69;
 const int MAX_DEPTH = 999;
-const bool HELLINGER = false;
+const bool HELLINGER = true;
+const int BUCKETS = 10;
 
 union Z {
     int i;
@@ -12,6 +33,11 @@ union Z {
     Z(int x): i(x) {}
     Z(float x): f(x) {}
 };
+
+std::vector<std::string> classes;
+std::vector<std::string> attrNames;
+std::vector<std::vector<std::string>> attrValues; // att[0] == {"b", "o", "x"}
+std::vector<bool> isContinuous;
 
 typedef std::vector<Z> Row;
 typedef std::vector<Row> Rows;
@@ -47,37 +73,37 @@ namespace Utils {
     inline float sqr(float x) {
         return x*x;
     }
-};
+
+    void trim(std::string &s) {
+        int start = 0, end = s.size()-1;
+        while (s[start] == ' ') ++start;
+        while (s[end] == ' ') --end;
+        // "   abcdefgh   "
+        //     ^      ^
+        s = s.substr(start, end-start+1);
+    }
+}
 
 struct Question {
     int column;
-    float value; // TODO type pending
+    float value; // TODO type pending // *mozda* nas nije briga
 
     bool match(const Row &example) const {
         // Compare the feature value in an example to the
         // feature value in this question.
-        float value = example[this->column].f;
-        return value >= this->value;
-        /* TODO: ovaj if bi trebao biti check
-                 je li atribut continuous
-        if (this->column == 1) {
-            return value >= this->value;
+        if (isContinuous[this->column]) {
+            return example[this->column].f >= this->value;
         }
-        return value == this->value;
-        */
+        return example[this->column].i == (int)this->value;
     }
 
-    void print() {
-        printf("Is att%d ", this->column);
-        printf(">= %.3f?\n", this->value);
-        /* TODO: ovaj if bi trebao biti check
-                 je li atribut continuous
-        if (this->column == 1) {
-            printf(">= %d?\n", this->value);
+    void print() const {
+        printf("Is %s ", attrNames[this->column].c_str());
+        if (isContinuous[this->column]) {
+            printf(">= %.3f?\n", this->value);
             return;
         }
-        printf("== %s?\n", colors[this->value]);
-        */
+        printf("== %s?\n", attrValues[this->column][(int)this->value].c_str());
     }
 };
 
@@ -85,12 +111,9 @@ std::vector<int> class_histogram(const Rows &rows) {
     /*
     count number of rows per class
     */
-    std::vector<int> histogram(16);
+    std::vector<int> histogram(classes.size());
     for (const auto &row: rows) {
         int label = row.back().i;
-        while (histogram.size() <= label) {
-            histogram.resize(histogram.size()*2);
-        }
         ++histogram[label];
     }
     return histogram;
@@ -133,8 +156,9 @@ float gini(const Rows &rows) {
     return impurity;
 }
 
-inline std::set<float> feature_values(int col, const Rows &rows) {
+std::set<float> feature_values(int col, const Rows &rows) {
     // TODO: ne moze ostati float, ovisit ce o tipu attr
+    // *mozda* nas to nije briga?
     std::set<float> values;
     for (const auto &row: rows) {
         values.insert(row[col].f);
@@ -182,6 +206,7 @@ void find_best_split(const Rows &rows, float &best_gain,
             Rows true_rows, false_rows;
             partition(rows, question, true_rows, false_rows);
             if (true_rows.size() == 0 || false_rows.size() == 0) {
+                //std::cerr << "skip " << true_rows.size() << ' ' << false_rows.size() << std::endl;
                 continue;
             }
             float gain;
@@ -190,14 +215,15 @@ void find_best_split(const Rows &rows, float &best_gain,
             } else {
                 gain = info_gain(true_rows, false_rows, current_uncertainty);
             }
-            if (gain >= best_gain) {
+            if (gain > best_gain) {
                 best_gain = gain;
                 best_question = question;
             }
         }
     }
-    best_question.print();
-    std::cerr << best_gain << std::endl;
+    if (best_gain == 0) return;
+    //best_question.print();
+    //std::cerr << best_gain << std::endl;
 }
 
 Node *build_tree(const Rows &rows, int depth=MAX_DEPTH) {
@@ -222,9 +248,9 @@ void print_tree(Node *node, const std::string &spacing="") {
     if (node->isLeaf) {
         printf("%sPredict {", spacing.c_str());
         bool comma = false;
-        for (int i = 0; i < 2; ++i) {
+        for (int i = 0; i < (int)classes.size(); ++i) { // should always be 2
             if (node->predictions[i] == 0) continue;
-            printf("%s%d: %d", (comma?", ":""), i, node->predictions[i]);
+            printf("%s%s: %d", (comma?", ":""), classes[i].c_str(), node->predictions[i]);
             comma = true;
         }
         printf("}\n");
@@ -251,31 +277,132 @@ std::vector<int> classify(const Row &row, Node *node) {
 
 float print_leaf(const std::vector<int> &counts, int actual) {
     float total = std::accumulate(counts.begin(), counts.end(), 0);
-    printf("{");
+    //printf("{");
     bool comma = false;
-    float ret;
-    for (int i = 0; i < 2; ++i) {
+    float ret = 0;
+    for (int i = 0; i < (int)classes.size(); ++i) { // should always be 2
         float p = counts[i]/total*100;
         if (i == actual) ret = p;
         if (counts[i] == 0) continue;
-        printf("%s%d: %.2f%%", (comma?", ":""), i, p);
+        //printf("%s%s: %.2f%%", (comma?", ":""), classes[i].c_str(), p);
         comma = true;
     }
-    printf("}\n");
+    //printf("}\n");
     return ret;
 }
 
-void getData(const std::string &file, 
+std::vector<std::string> parseLine(const std::string &line, char delimiter=',') {
+    std::vector<std::string> splits;
+    std::string cur;
+    for (char c: line) {
+        if (c == delimiter) {
+            Utils::trim(cur);
+            splits.push_back(cur);
+            cur = "";
+        } else {
+            cur.push_back(c);
+        }
+    }
+    Utils::trim(cur);
+    if (!cur.empty()) {
+        splits.push_back(cur);
+    }
+    return splits;
+}
+
+void makeDatastructure(const std::string &filePath) {
+    std::ifstream fin(filePath);
+    std::string line;
+    bool getClasses = true;
+    bool getAttrs = false;
+    for (int lineno = 0; getline(fin, line); ++lineno) {
+        Utils::trim(line);
+        if (line.size() == 0) continue;
+        if (line.back() == '.') line.pop_back();
+        if (line == "|classes") {
+            getClasses = true;
+        } else if (getClasses) {
+            classes = parseLine(line);
+            if (classes.size() == 1) {
+                std::cerr << line << std::endl;
+                std::cerr << classes[0] << std::endl;
+                std::cerr << "What are you doing with just one class lol" << std::endl;
+                exit(1);
+            }
+            getClasses = false;
+            getAttrs = true;
+        } else if (line == "|attributes") { // maybe unnecessary?
+            getAttrs = true;
+        } else if (getAttrs) {
+            int colon = line.find(':');
+            std::string attrName = line.substr(0, colon);
+            attrNames.push_back(attrName);
+            line = line.substr(colon+1);
+            attrValues.push_back(parseLine(line));
+            isContinuous.push_back(attrValues.back()[0] == "continuous");
+        } else {
+            std::cerr << "Unsupported .names file, check line " << lineno << std::endl;
+            exit(1);
+        }
+    }
+    /*for (int i = 0; i < (int)attrNames.size(); ++i) {
+        std::cout << attrNames[i] << ": ";
+        for (int j = 0; j < (int)attrValues[i].size(); ++j) {
+            std::cout << attrValues[i][j] << ", ";
+        }
+        std::cout << std::endl;
+    }*/
+}
+
+void getData(const std::string &filestub, 
              Rows &training_data, Rows &testing_data) {
+    makeDatastructure(filestub+".names");
     Rows data;
-    std::ifstream fin(file);
-    for (int i = 0, b = true; b; ++i) {
-        char c; data.emplace_back(6);
-        b = (bool)(fin >> data[i][0].f >> c >> data[i][1].f >> c 
-                       >> data[i][2].f >> c >> data[i][3].f >> c
-                       >> data[i][4].f >> c >> data[i][5].i);
+    std::ifstream fin(filestub+".data");
+    std::string line;
+    for (int lineno = 0; getline(fin, line); ++lineno) {
+        auto values = parseLine(line);
+        data.emplace_back(values.size());
+        for (int i = 0; i < (int)values.size()-1; ++i) {
+            if (values[i] == "?") {
+                data.pop_back();
+                break;
+            }
+            if (isContinuous[i]) {
+                data.back()[i].f = std::atof(values[i].c_str());
+            } else {
+                auto x = std::find(attrValues[i].begin(),
+                                   attrValues[i].end(),
+                                   values[i]);
+                if (x == attrValues[i].end()) {
+                    std::cerr << "Looking for \"" << values[i] << "\" in:" << std::endl;
+                    for (const auto &v: attrValues[i]) {
+                        std::cerr << v << ", ";
+                    }
+                    std::cerr << "\nCheck line " << lineno << std::endl;
+                    std::cerr << "That don't exist bro." << std::endl;
+                    exit(1);
+                }
+                data.back()[i].i = x-attrValues[i].begin();
+            }
+        }
+        auto x = std::find(classes.begin(),
+                           classes.end(),
+                           values.back());
+        if (x == classes.end()) {
+            std::cerr << "That class don't exist bro." << std::endl;
+            exit(1);
+        }
+        data.back().back().i = x-classes.begin();
     }
     fin.close();
+
+    /*for (const auto &row: data) {
+        for (const auto &d: row) {
+            printf("%f ", d.f);
+        }
+        puts("");
+    }*/
 
     std::random_shuffle(data.begin(), data.end());
     int trainCount = data.size()*TRAIN_TO_TEST_RATIO;
@@ -288,15 +415,15 @@ void getData(const std::string &file,
 int main(int argc, char **argv) {
     std::srand(SEED);
     Rows training_data, testing_data;
-    std::string dataFile; std::cin >> dataFile;
-    getData(dataFile, training_data, testing_data);
+    std::string filestub; std::cin >> filestub; // e.g. "phoneme"
+    getData(filestub, training_data, testing_data);
 
     Node *tree = build_tree(training_data);
     printf("\n");
-    print_tree(tree);
+    //print_tree(tree);
     float sum = 0;
     for (const auto &row: testing_data) {
-        printf("Actual: %d. Predicted: ", row.back().i);
+        //printf("Actual: %s. Predicted: ", classes[row.back().i].c_str());
         sum += print_leaf(classify(row, tree), row.back().i);
     }
     printf("Average certainty: %.2f%%", sum/testing_data.size());
