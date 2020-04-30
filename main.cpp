@@ -9,10 +9,11 @@
 #include <cstdio>
 #include <cmath>
 
-// TODO: citati iz .names datoteka i postaviti sve da radi za generic dataset
+#include "profiler.hpp"
+
 // TODO: dodati AUC i f-measure
 // TODO: kad su vrijednosti continuous, podijeli u N buckets umjesto svih mogucih vrijednosti
-// TODO: figure out multi-class hellinger distance
+// TODO: implementiraj multi-class hellinger distance
 // TODO: dodaj commandline arguments
 // TODO: dodaj cross validation
 // TODO: fixati apsolutno sve da nije ovako fugly (npr don't mix iostream and stdio)
@@ -22,9 +23,19 @@
 
 const float TRAIN_TO_TEST_RATIO = 0.70f;
 const int SEED = 69;
-const int MAX_DEPTH = 999;
+const int MAX_DEPTH = 5;
 const bool HELLINGER = true;
 const int BUCKETS = 10;
+
+
+#define PROFILING 1
+#if PROFILING
+#define PROFILE_SCOPE(name) Timer timer##__LINE__(name)
+#define PROFILE_FUNCTION() PROFILE_SCOPE(__FUNCTION__)
+#else
+#define PROFILE_SCOPE(name)
+#define PROFILE_FUNCTION()
+#endif
 
 union Z {
     int i;
@@ -60,7 +71,8 @@ namespace Utils {
     }
 
     int count(const Rows &rows, int label) {
-        // filter only for rows with label == `label`
+        PROFILE_FUNCTION();
+        // count only for rows with label == `label`
         int ret = 0;
         for (const auto &row: rows) {
             if (row.back().i == label) {
@@ -140,6 +152,7 @@ struct Node {
 };
 
 float gini(const Rows &rows) {
+    PROFILE_FUNCTION();
     /*
     Calculate the Gini Impurity for a list of rows.
 
@@ -179,11 +192,13 @@ void partition(const Rows &rows, const Question &question,
 
 float info_gain(const Rows &left, const Rows &right,
                 float current_uncertainty) {
+    PROFILE_FUNCTION();
     float p = 1. * left.size() / (left.size() + right.size());
     return current_uncertainty - p*gini(left) - (1-p)*gini(right);
 }
 
 float hellinger_distance(const Rows &left, const Rows &right, float tp) {
+    PROFILE_FUNCTION();
     float tfwp = Utils::count(right, 0);
     float tfvp = Utils::count(left, 0);
     float tfwn = right.size() - tfwp;
@@ -195,6 +210,7 @@ float hellinger_distance(const Rows &left, const Rows &right, float tp) {
 
 void find_best_split(const Rows &rows, float &best_gain, 
                      Question &best_question) {
+    PROFILE_FUNCTION();
     best_gain = 0;
     float current_uncertainty = gini(rows);
     float tp = Utils::count(rows, 0);
@@ -311,6 +327,7 @@ std::vector<std::string> parseLine(const std::string &line, char delimiter=',') 
 }
 
 void makeDatastructure(const std::string &filePath) {
+    PROFILE_FUNCTION();
     std::ifstream fin(filePath);
     std::string line;
     bool getClasses = true;
@@ -356,6 +373,7 @@ void makeDatastructure(const std::string &filePath) {
 
 void getData(const std::string &filestub, 
              Rows &training_data, Rows &testing_data) {
+    PROFILE_FUNCTION();
     makeDatastructure(filestub+".names");
     Rows data;
     std::ifstream fin(filestub+".data");
@@ -413,6 +431,8 @@ void getData(const std::string &filestub,
 }
 
 int main(int argc, char **argv) {
+    Instrumentor::get().beginSession("HDTV");
+    PROFILE_FUNCTION();
     std::srand(SEED);
     Rows training_data, testing_data;
     std::string filestub; std::cin >> filestub; // e.g. "phoneme"
@@ -427,4 +447,5 @@ int main(int argc, char **argv) {
         sum += print_leaf(classify(row, tree), row.back().i);
     }
     printf("Average certainty: %.2f%%", sum/testing_data.size());
+    Instrumentor::get().endSession();
 }
