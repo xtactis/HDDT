@@ -11,10 +11,10 @@
 
 #include "profiler.hpp"
 
-// TODO: dodati AUC i f-measure
 // TODO: kad su vrijednosti continuous, podijeli u N buckets umjesto svih mogucih vrijednosti
 // TODO: implementiraj multi-class hellinger distance
 // TODO: dodaj commandline arguments
+// TODO: sve osim stats u log file or sth
 // TODO: dodaj cross validation
 // TODO: fixati apsolutno sve da nije ovako fugly (npr don't mix iostream and stdio)
 // TODO: nemoj koristiti std::vector nego napravi nesto svoje sto ce imati countove potrebne za hellingera
@@ -23,12 +23,12 @@
 
 const float TRAIN_TO_TEST_RATIO = 0.70f;
 const int SEED = 69;
-const int MAX_DEPTH = 5;
+const int MAX_DEPTH = 999;
 const bool HELLINGER = true;
 const int BUCKETS = 10;
 
 
-#define PROFILING 1
+#define PROFILING 0
 #if PROFILING
 #define PROFILE_SCOPE(name) Timer timer##__LINE__(name)
 #define PROFILE_FUNCTION() PROFILE_SCOPE(__FUNCTION__)
@@ -45,6 +45,8 @@ union Z {
     Z(float x): f(x) {}
 };
 
+int minorityClass;
+std::vector<int> totalHist;
 std::vector<std::string> classes;
 std::vector<std::string> attrNames;
 std::vector<std::vector<std::string>> attrValues; // att[0] == {"b", "o", "x"}
@@ -199,8 +201,8 @@ float info_gain(const Rows &left, const Rows &right,
 
 float hellinger_distance(const Rows &left, const Rows &right, float tp) {
     PROFILE_FUNCTION();
-    float tfwp = Utils::count(right, 0);
-    float tfvp = Utils::count(left, 0);
+    float tfwp = Utils::count(right, minorityClass);
+    float tfvp = Utils::count(left, minorityClass);
     float tfwn = right.size() - tfwp;
     float tfvn = left.size() - tfvp;
     float tn = (left.size() + right.size()) - tp;
@@ -213,7 +215,7 @@ void find_best_split(const Rows &rows, float &best_gain,
     PROFILE_FUNCTION();
     best_gain = 0;
     float current_uncertainty = gini(rows);
-    float tp = Utils::count(rows, 0);
+    float tp = Utils::count(rows, minorityClass);
     int n_features = rows[0].size() - 1;
     for (int column = 0; column < n_features; ++column) {
         auto values = feature_values(column, rows);
@@ -222,7 +224,6 @@ void find_best_split(const Rows &rows, float &best_gain,
             Rows true_rows, false_rows;
             partition(rows, question, true_rows, false_rows);
             if (true_rows.size() == 0 || false_rows.size() == 0) {
-                //std::cerr << "skip " << true_rows.size() << ' ' << false_rows.size() << std::endl;
                 continue;
             }
             float gain;
@@ -238,8 +239,6 @@ void find_best_split(const Rows &rows, float &best_gain,
         }
     }
     if (best_gain == 0) return;
-    //best_question.print();
-    //std::cerr << best_gain << std::endl;
 }
 
 Node *build_tree(const Rows &rows, int depth=MAX_DEPTH) {
@@ -291,20 +290,16 @@ std::vector<int> classify(const Row &row, Node *node) {
     return classify(row, node->right);
 }
 
-float print_leaf(const std::vector<int> &counts, int actual) {
-    float total = std::accumulate(counts.begin(), counts.end(), 0);
-    //printf("{");
+void print_leaf(const std::vector<int> &counts, int total) {
+    printf("{");
     bool comma = false;
-    float ret = 0;
     for (int i = 0; i < (int)classes.size(); ++i) { // should always be 2
-        float p = counts[i]/total*100;
-        if (i == actual) ret = p;
+        float p = 1.*counts[i]/total*100;
         if (counts[i] == 0) continue;
-        //printf("%s%s: %.2f%%", (comma?", ":""), classes[i].c_str(), p);
+        printf("%s%s: %.2f%%", (comma?", ":""), classes[i].c_str(), p);
         comma = true;
     }
-    //printf("}\n");
-    return ret;
+    printf("}\n");
 }
 
 std::vector<std::string> parseLine(const std::string &line, char delimiter=',') {
@@ -362,13 +357,6 @@ void makeDatastructure(const std::string &filePath) {
             exit(1);
         }
     }
-    /*for (int i = 0; i < (int)attrNames.size(); ++i) {
-        std::cout << attrNames[i] << ": ";
-        for (int j = 0; j < (int)attrValues[i].size(); ++j) {
-            std::cout << attrValues[i][j] << ", ";
-        }
-        std::cout << std::endl;
-    }*/
 }
 
 void getData(const std::string &filestub, 
@@ -415,19 +403,29 @@ void getData(const std::string &filestub,
     }
     fin.close();
 
-    /*for (const auto &row: data) {
-        for (const auto &d: row) {
-            printf("%f ", d.f);
-        }
-        puts("");
-    }*/
-
     std::random_shuffle(data.begin(), data.end());
     int trainCount = data.size()*TRAIN_TO_TEST_RATIO;
     training_data.resize(trainCount);
     testing_data.resize(data.size()-trainCount);
     std::copy_n(data.begin(), trainCount, training_data.begin());
     std::copy_n(data.rbegin(), data.size()-trainCount, testing_data.begin());
+
+    minorityClass = min_element(totalHist.begin(), totalHist.end())-totalHist.begin();
+    if (classes.size() == 2) { // TODO: bilo bi lipo da radi i za vise od 2 klasice
+        totalHist.resize(2);
+        totalHist[0] = Utils::count(data, 0);
+        totalHist[1] = data.size()-totalHist[0];
+    }
+}
+
+float AUC(int TP, int TN, int FP, int FN) {
+    return (1.f*TP/(TP+FN) + 1.f*TN/(FP+TN))/2.f;
+}
+
+float fMeasure(int TP, int TN, int FP, int FN) {
+    float precision = 1.*TP/(TP+FP);
+    float sensitivity = 1.*TP/(TP+FN);
+    return 2.*precision*sensitivity/(precision+sensitivity);
 }
 
 int main(int argc, char **argv) {
@@ -438,14 +436,38 @@ int main(int argc, char **argv) {
     std::string filestub; std::cin >> filestub; // e.g. "phoneme"
     getData(filestub, training_data, testing_data);
 
+    fprintf(stderr, "Building tree...\n");
     Node *tree = build_tree(training_data);
     printf("\n");
-    //print_tree(tree);
+    print_tree(tree);
     float sum = 0;
+    int TP = 0, TN = 0, FP = 0, FN = 0;
+    int truers = 0;
     for (const auto &row: testing_data) {
-        //printf("Actual: %s. Predicted: ", classes[row.back().i].c_str());
-        sum += print_leaf(classify(row, tree), row.back().i);
+        printf("Actual: %s. Predicted: ", classes[row.back().i].c_str());
+        int actual = row.back().i;
+        const auto hist = classify(row, tree);
+        float total = std::accumulate(hist.begin(), hist.end(), 0);
+        print_leaf(hist, total);
+        int prediction = std::max_element(hist.begin(), hist.end())-hist.begin();
+        sum += hist[actual]/total;
+        if (totalHist.size() == 2) {
+            if (prediction == actual) {
+                ++truers;
+                if (prediction == minorityClass) ++TP;
+                else ++TN;
+            } else {
+                if (prediction == minorityClass) ++FP;
+                else ++FN;
+            }
+        }
     }
-    printf("Average certainty: %.2f%%", sum/testing_data.size());
+    printf("Average confidence:\t%8.5f%%\n", sum/testing_data.size()*100);
+    printf("Accuracy:\t\t%8.5f%%\n", 1.*truers/testing_data.size()*100);
+    if (totalHist.size() == 2) {
+        printf("AUC:\t\t\t%8.5f\n", AUC(TP, TN, FP, FN));
+        printf("f-measure:\t\t%8.5f", fMeasure(TP, TN, FP, FN));
+    }
     Instrumentor::get().endSession();
+    return 0;
 }
