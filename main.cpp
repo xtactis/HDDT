@@ -8,7 +8,7 @@
 #include <cmath>
 #include <cstring>
 
-// TODO: implementiraj multi-class hellinger distance
+// TODO: implementiraj multi-class hellinger distance // lol
 // TODO: sve osim stats u log file or sth
 // TODO: dodaj cross validation
 // TODO: fixati apsolutno sve da nije ovako fugly (npr don't mix iostream and stdio)
@@ -128,23 +128,23 @@ std::vector<int> class_histogram(const Rows &rows) {
 
 struct Node {
     bool isLeaf = false;
-    Node *left = nullptr, *right = nullptr;
+    std::vector<Node *> children;
     Question question;
     std::vector<int> predictions;
-
-    Node(Node *l, Node *r, const Question &q) :
-        left(l), right(r), question(q) {}
-
-    Node(const Rows &rows) : isLeaf(true), predictions(class_histogram(rows)) {}
-
-    static Node *DecisionNode(Node *l, Node *r, const Question &q) {
-        return new Node(l, r, q);
-    }
-
-    static Node *Leaf(const Rows &rows) {
-        return new Node(rows);
-    }
 };
+
+Node *DecisionNodeContinuous(Node *l, Node *r, const Question &q) {
+    Node *node = (Node *)malloc(sizeof(Node));
+    node->question = q;
+    node->children = {l, r};
+    return node;
+}
+
+Node *Leaf(const Rows &rows) {
+    Node *node = (Node *)malloc(sizeof(Node));
+    node->predictions = class_histogram(rows);
+    return node;
+}
 
 float gini(const Rows &rows) {
     /*
@@ -194,22 +194,20 @@ float info_gain(const Rows &left, const Rows &right,
     return current_uncertainty - p*gini(left) - (1-p)*gini(right);
 }
 
-float hellinger_distance(int lsize, int rsize, float tp, float tfvp, float tfwp) {
-    float tfvn = lsize - tfvp;
-    float tfwn = rsize - tfwp;
-    float tn = (lsize + rsize) - tp;
-    return Utils::sqr(std::sqrt(tfvp/tp) - std::sqrt(tfvn/tn))
-         + Utils::sqr(std::sqrt(tfwp/tp) - std::sqrt(tfwn/tn));
-}
-
 void split_continuous(const Rows &rows, int column, float current_uncertainty,
                                 float &best_gain, Question &best_question,
                                 int max_buckets) {
-    float min = mins[column], max = maxs[column];
-    const int buckets = std::min(max_buckets, uniqueValueCount[column]);
-    float step = (max-min)/buckets;
-    for (int bucket = 0; bucket <= buckets; ++bucket) {
-        float value = bucket*step+min;
+    std::set<float> values;
+    if (max_buckets < uniqueValueCount[column]) {
+        float min = mins[column], max = maxs[column];
+        float step = (max-min)/max_buckets;
+        for (int bucket = 0; bucket <= max_buckets; ++bucket) {
+            values.insert(bucket*step+min);
+        }
+    } else {
+        values = feature_values(column, rows);
+    }
+    for (float value: values) {
         Question question = {column, value};
         Rows true_rows, false_rows;
         partition(rows, question, true_rows, false_rows);
@@ -255,14 +253,28 @@ void find_best_split_indian(const Rows &rows, float &best_gain,
     }
 }
 
+float hellinger_distance(int lsize, int rsize, float tp, float tfvp, float tfwp) {
+    float tfvn = lsize - tfvp;
+    float tfwn = rsize - tfwp;
+    float tn = (lsize + rsize) - tp;
+    return Utils::sqr(std::sqrt(tfvp/tp) - std::sqrt(tfvn/tn))
+         + Utils::sqr(std::sqrt(tfwp/tp) - std::sqrt(tfwn/tn));
+}
+
 void hellinger_split_continuous(const Rows &rows, int column, int tp,
                                 float &best_gain, Question &best_question,
                                 int max_buckets) {
-    float min = mins[column], max = maxs[column];
-    const int buckets = std::min(max_buckets, uniqueValueCount[column]);
-    float step = (max-min)/buckets;
-    for (int bucket = 0; bucket <= buckets; ++bucket) {
-        float value = step*bucket+min;
+    std::set<float> values;
+    if (max_buckets < uniqueValueCount[column]) {
+        float min = mins[column], max = maxs[column];
+        float step = (max-min)/max_buckets;
+        for (int bucket = 0; bucket <= max_buckets; ++bucket) {
+            values.insert(bucket*step+min);
+        }
+    } else {
+        values = feature_values(column, rows);
+    }
+    for (float value: values) {
         Question question = {column, value};
         int lsize = 0, rsize = 0;
         int tfvp = 0, tfwp = 0;
@@ -327,41 +339,63 @@ void find_best_split_hellinger(const Rows &rows,
     }
 }
 
+template<void (*split_function)(const Rows &, float &, Question &, int)>
+Node *build_CART_tree(const Rows &rows, int depth, int max_buckets) {
+    float gain; 
+    Question question;
+    if (depth == 0) {
+        return Leaf(rows);
+    }
+    // nez
+    split_function(rows, gain, question, max_buckets);
+    if (Utils::eq(gain, 0)) {
+        return Leaf(rows);
+    }
+    Rows true_rows, false_rows;
+    partition(rows, question, true_rows, false_rows);
+
+    Node *true_branch = build_CART_tree<split_function>(true_rows, depth-1, max_buckets);
+    Node *false_branch = build_CART_tree<split_function>(false_rows, depth-1, max_buckets);
+    return DecisionNodeContinuous(true_branch, false_branch, question);
+}
+
+// DEPRECATED
 Node *build_hellinger_tree(const Rows &rows, int depth, int max_buckets) {
     float gain; 
     Question question;
     if (depth == 0) {
-        return Node::Leaf(rows);
+        return Leaf(rows);
     }
     // nez
     find_best_split_hellinger(rows, gain, question, max_buckets);
     if (Utils::eq(gain, 0)) {
-        return Node::Leaf(rows);
+        return Leaf(rows);
     }
     Rows true_rows, false_rows;
     partition(rows, question, true_rows, false_rows);
 
     Node *true_branch = build_hellinger_tree(true_rows, depth-1, max_buckets);
     Node *false_branch = build_hellinger_tree(false_rows, depth-1, max_buckets);
-    return Node::DecisionNode(true_branch, false_branch, question);
+    return DecisionNodeContinuous(true_branch, false_branch, question);
 }
 
+// DEPRECATED
 Node *build_decision_tree(const Rows &rows, int depth, int max_buckets) {
     float gain; 
     Question question;
     if (depth == 0) {
-        return Node::Leaf(rows);
+        return Leaf(rows);
     }
     find_best_split_indian(rows, gain, question, max_buckets);
     if (Utils::eq(gain, 0)) {
-        return Node::Leaf(rows);
+        return Leaf(rows);
     }
     Rows true_rows, false_rows;
     partition(rows, question, true_rows, false_rows);
 
     Node *true_branch = build_decision_tree(true_rows, depth-1, max_buckets);
     Node *false_branch = build_decision_tree(false_rows, depth-1, max_buckets);
-    return Node::DecisionNode(true_branch, false_branch, question);
+    return DecisionNodeContinuous(true_branch, false_branch, question);
 }
 
 /* TODO: finish later
@@ -436,9 +470,9 @@ void print_tree(Node *node, const std::string &spacing="") {
     printf("== %s?\n", attrValues[node->question.column][(int)node->question.value.i].c_str());
 
     printf("%s--> True:\n", spacing.c_str());
-    print_tree(node->left, spacing+"  ");
+    print_tree(node->children[0], spacing+"  ");
     printf("%s--> False:\n", spacing.c_str());
-    print_tree(node->right, spacing+"  ");
+    print_tree(node->children[1], spacing+"  ");
 }
 
 std::vector<int> classify(const Row &row, Node *node) {
@@ -446,9 +480,9 @@ std::vector<int> classify(const Row &row, Node *node) {
         return node->predictions;
     }
     if (node->question.match(row)) {
-        return classify(row, node->left);
+        return classify(row, node->children[0]);
     }
-    return classify(row, node->right);
+    return classify(row, node->children[1]);
 }
 
 void print_leaf(const std::vector<int> &counts, int total) {
@@ -669,10 +703,12 @@ int main(int argc, char **argv) {
     Node *tree;
     if (hellinger) {
         fprintf(stderr, "Building Hellinger tree...\n");
-        tree = build_hellinger_tree(training_data, max_depth, max_buckets);
+        tree = build_CART_tree<find_best_split_hellinger>(training_data, max_depth, max_buckets);
+        //tree = build_hellinger_tree(training_data, max_depth, max_buckets);
     } else {
         fprintf(stderr, "Building decision tree...\n");
-        tree = build_decision_tree(training_data, max_depth, max_buckets);
+        tree = build_CART_tree<find_best_split_indian>(training_data, max_depth, max_buckets);
+        //tree = build_decision_tree(training_data, max_depth, max_buckets);
     }
     printf("\n");
     //print_tree(tree);
