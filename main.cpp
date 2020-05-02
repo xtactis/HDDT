@@ -8,13 +8,14 @@
 #include <cmath>
 #include <cstring>
 
+// TODO: implementiraj C4.5 i hellinger C4.5
 // TODO: implementiraj multi-class hellinger distance // lol
 // TODO: sve osim stats u log file or sth
 // TODO: dodaj cross validation
-// TODO: fixati apsolutno sve da nije ovako fugly (npr don't mix iostream and stdio)
-// TODO: nemoj koristiti std::vector nego napravi nesto svoje sto ce imati countove potrebne za hellingera
 // TODO: dodaj grid search za hiperparametre
 // TODO: dodaj mogucnost spremanja stvorenog stabla
+// TODO: fixati apsolutno sve da nije ovako fugly (npr don't mix iostream and stdio)
+// TODO: nemoj koristiti std::vector nego napravi nesto svoje sto ce imati countove potrebne za hellingera
 
 //#define PROFILING
 #ifdef PROFILING
@@ -134,14 +135,15 @@ struct Node {
 };
 
 Node *DecisionNodeContinuous(Node *l, Node *r, const Question &q) {
-    Node *node = (Node *)malloc(sizeof(Node));
+    Node *node = new Node();
     node->question = q;
     node->children = {l, r};
     return node;
 }
 
 Node *Leaf(const Rows &rows) {
-    Node *node = (Node *)malloc(sizeof(Node));
+    Node *node = new Node();
+    node->isLeaf = true;
     node->predictions = class_histogram(rows);
     return node;
 }
@@ -716,11 +718,11 @@ int main(int argc, char **argv) {
     int TP = 0, TN = 0, FP = 0, FN = 0;
     int truers = 0;
     for (const auto &row: testing_data) {
-        //printf("Actual: %s. Predicted: ", classes[row.back().i].c_str());
+        printf("Actual: %s. Predicted: ", classes[row.back().i].c_str());
         int actual = row.back().i;
         const auto hist = classify(row, tree);
         float total = Utils::accumulate(hist);
-        //print_leaf(hist, total);
+        print_leaf(hist, total);
         int prediction = std::max_element(hist.begin(), hist.end())-hist.begin();
         sum += hist[actual]/total;
         if (totalHist.size() == 2) {
