@@ -1,16 +1,12 @@
 #include <algorithm>
 #include <fstream>
-#include <numeric>
 #include <vector>
 #include <string>
 #include <set>
-#include <map>
 
 #include <cstdio>
 #include <cmath>
 #include <cstring>
-
-#include "profiler.hpp"
 
 // TODO: implementiraj multi-class hellinger distance
 // TODO: sve osim stats u log file or sth
@@ -22,9 +18,14 @@
 
 //#define PROFILING
 #ifdef PROFILING
+#include "profiler.hpp"
+#define BEGIN_SESSION(name) Instrumentor::get().beginSession(name);
+#define END_SESSION() Instrumentor::get().endSession();
 #define PROFILE_SCOPE(name) Timer timer##__LINE__(name);
 #define PROFILE_FUNCTION PROFILE_SCOPE(__FUNCTION__)
 #else
+#define BEGIN_SESSION(name)
+#define END_SESSION()
 #define PROFILE_SCOPE(name)
 #define PROFILE_FUNCTION
 #endif
@@ -88,6 +89,14 @@ namespace Utils {
         // "   abcdefgh   "
         //     ^      ^
         s = s.substr(start, end-start+1);
+    }
+
+    template<typename T>
+    T accumulate(std::vector<T> v, T init = 0) {
+        for (const auto &e: v) {
+            init += e;
+        }
+        return init;
     }
 }
 
@@ -641,7 +650,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    Instrumentor::get().beginSession("HDTV");
+    BEGIN_SESSION("HDTV"); 
     std::srand(seed);
     Rows data;
     getData(filestem, data);
@@ -674,7 +683,7 @@ int main(int argc, char **argv) {
         //printf("Actual: %s. Predicted: ", classes[row.back().i].c_str());
         int actual = row.back().i;
         const auto hist = classify(row, tree);
-        float total = std::accumulate(hist.begin(), hist.end(), 0);
+        float total = Utils::accumulate(hist);
         //print_leaf(hist, total);
         int prediction = std::max_element(hist.begin(), hist.end())-hist.begin();
         sum += hist[actual]/total;
@@ -695,6 +704,6 @@ int main(int argc, char **argv) {
         printf("AUC:\t\t\t%8.5f\n", AUC(TP, TN, FP, FN));
         printf("f-measure:\t\t%8.5f", fMeasure(TP, TN, FP, FN));
     }
-    Instrumentor::get().endSession();
+    END_SESSION();
     return 0;
 }
