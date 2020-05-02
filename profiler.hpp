@@ -1,4 +1,5 @@
-#pragma once
+#ifndef PROFILER_H
+#define PROFILER_H
 
 #include <chrono>
 #include <thread>
@@ -98,3 +99,5 @@ struct Timer {
         }
     }
 };
+
+#endif
