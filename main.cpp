@@ -8,25 +8,17 @@
 
 #include <cstdio>
 #include <cmath>
+#include <cstring>
 
 #include "profiler.hpp"
 
 // TODO: implementiraj multi-class hellinger distance
-// TODO: dodaj commandline arguments
 // TODO: sve osim stats u log file or sth
 // TODO: dodaj cross validation
 // TODO: fixati apsolutno sve da nije ovako fugly (npr don't mix iostream and stdio)
 // TODO: nemoj koristiti std::vector nego napravi nesto svoje sto ce imati countove potrebne za hellingera
 // TODO: dodaj grid search za hiperparametre
 // TODO: dodaj mogucnost spremanja stvorenog stabla
-
-const float TRAIN_TO_TEST_RATIO = 0.70f;
-const int SEED = 69;
-const int MAX_DEPTH = 999;
-const bool HELLINGER = true;
-const int BUCKETS = 100;
-
-// ako je continuous i min je 0.0, a max 1.0 i BUCKETS=10, onda zelim da su bucketi npr 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0
 
 //#define PROFILING
 #ifdef PROFILING
@@ -48,7 +40,7 @@ union Z {
 using Row = std::vector<Z>;
 using Rows = std::vector<Row>;
 
-int minorityClass;
+int minorityClass; // TODO: get rid of these globals, legitimately just send them to everything that uses them
 std::vector<int> totalHist;
 std::vector<std::string> classes;
 std::vector<std::string> attrNames;
@@ -201,35 +193,65 @@ float hellinger_distance(int lsize, int rsize, float tp, float tfvp, float tfwp)
          + Utils::sqr(std::sqrt(tfwp/tp) - std::sqrt(tfwn/tn));
 }
 
+void split_continuous(const Rows &rows, int column, float current_uncertainty,
+                                float &best_gain, Question &best_question,
+                                int max_buckets) {
+    float min = mins[column], max = maxs[column];
+    const int buckets = std::min(max_buckets, uniqueValueCount[column]);
+    float step = (max-min)/buckets;
+    for (int bucket = 0; bucket <= buckets; ++bucket) {
+        float value = bucket*step+min;
+        Question question = {column, value};
+        Rows true_rows, false_rows;
+        partition(rows, question, true_rows, false_rows);
+        if (true_rows.size() == 0 || false_rows.size() == 0) {
+            continue;
+        }
+        float gain = info_gain(true_rows, false_rows, current_uncertainty);
+        if (gain > best_gain) {
+            best_gain = gain;
+            best_question = question;
+        }
+    }
+}
+
+void split_discrete(const Rows &rows, int column, float current_uncertainty,
+                               float &best_gain, Question &best_question) {
+    for (int value = 0; value < (int)attrValues[column].size(); ++value) {
+        Question question = {column, value};
+        Rows true_rows, false_rows;
+        partition(rows, question, true_rows, false_rows);
+        if (true_rows.size() == 0 || false_rows.size() == 0) {
+            continue;
+        }
+        float gain = info_gain(true_rows, false_rows, current_uncertainty);
+        if (gain > best_gain) {
+            best_gain = gain;
+            best_question = question;
+        }
+    }
+}
+
 void find_best_split_indian(const Rows &rows, float &best_gain, 
-                            Question &best_question) {
+                            Question &best_question, int max_buckets) {
     best_gain = 0;
     float current_uncertainty = gini(rows);
     int n_features = rows[0].size() - 1;
     for (int column = 0; column < n_features; ++column) {
-        auto values = feature_values(column, rows);
-        for (float value: values) {
-            Question question = {column, value};
-            Rows true_rows, false_rows;
-            partition(rows, question, true_rows, false_rows);
-            if (true_rows.size() == 0 || false_rows.size() == 0) {
-                continue;
-            }
-            float gain = info_gain(true_rows, false_rows, current_uncertainty);
-            if (gain > best_gain) {
-                best_gain = gain;
-                best_question = question;
-            }
+        if (isContinuous[column]) {
+            split_continuous(rows, column, current_uncertainty, best_gain, best_question, max_buckets);
+        } else {
+            split_discrete(rows, column, current_uncertainty, best_gain, best_question);
         }
     }
 }
 
 void hellinger_split_continuous(const Rows &rows, int column, int tp,
-                                 float &best_gain, Question &best_question) {
+                                float &best_gain, Question &best_question,
+                                int max_buckets) {
     float min = mins[column], max = maxs[column];
-    //fprintf(stderr, "%.2f %.2f\n", min, max);
-    float step = (max-min)/BUCKETS;
-    const int buckets = std::min(BUCKETS, uniqueValueCount[column]);
+    const int buckets = std::min(max_buckets, uniqueValueCount[column]);
+    float step = (max-min)/buckets;
     for (int bucket = 0; bucket <= buckets; ++bucket) {
         float value = step*bucket+min;
         Question question = {column, value};
@@ -281,43 +303,59 @@ void hellinger_split_discrete(const Rows &rows, int column, int tp,
     }
 }
 
-void find_best_split_hellinger(const Rows &rows, 
-                               float &best_gain, Question &best_question) {
+void find_best_split_hellinger(const Rows &rows,
+                               float &best_gain, Question &best_question,
+                               int max_buckets) {
     best_gain = 0;
     float tp = Utils::count(rows, minorityClass);
     int n_features = rows[0].size() - 1;
     for (int column = 0; column < n_features; ++column) {
         if (isContinuous[column]) {
-            hellinger_split_continuous(rows, column, tp, best_gain, best_question);
+            hellinger_split_continuous(rows, column, tp, best_gain, best_question, max_buckets);
         } else {
             hellinger_split_discrete(rows, column, tp, best_gain, best_question);
         }
     }
 }
 
-Node *build_tree(const Rows &rows, int depth=MAX_DEPTH) {
+Node *build_hellinger_tree(const Rows &rows, int depth, int max_buckets) {
     float gain; 
     Question question;
     if (depth == 0) {
         return Node::Leaf(rows);
     }
-    if (HELLINGER) {
-        // nez
-        find_best_split_hellinger(rows, gain, question);
-    } else {
-        find_best_split_indian(rows, gain, question);
-    }
+    // nez
+    find_best_split_hellinger(rows, gain, question, max_buckets);
     if (Utils::eq(gain, 0)) {
         return Node::Leaf(rows);
     }
     Rows true_rows, false_rows;
     partition(rows, question, true_rows, false_rows);
 
-    Node *true_branch = build_tree(true_rows, depth-1);
-    Node *false_branch = build_tree(false_rows, depth-1);
+    Node *true_branch = build_hellinger_tree(true_rows, depth-1, max_buckets);
+    Node *false_branch = build_hellinger_tree(false_rows, depth-1, max_buckets);
     return Node::DecisionNode(true_branch, false_branch, question);
 }
 
+Node *build_decision_tree(const Rows &rows, int depth, int max_buckets) {
+    float gain; 
+    Question question;
+    if (depth == 0) {
+        return Node::Leaf(rows);
+    }
+    find_best_split_indian(rows, gain, question, max_buckets);
+    if (Utils::eq(gain, 0)) {
+        return Node::Leaf(rows);
+    }
+    Rows true_rows, false_rows;
+    partition(rows, question, true_rows, false_rows);
+
+    Node *true_branch = build_decision_tree(true_rows, depth-1, max_buckets);
+    Node *false_branch = build_decision_tree(false_rows, depth-1, max_buckets);
+    return Node::DecisionNode(true_branch, false_branch, question);
+}
+
+/* TODO: finish later
 struct NekaStrukturica {
     //lol[5][3]; // za atribut 5 cija je vrijednost >= BUCKET[0.3] koliko ima minority klasa?
     std::vector<int> count;
@@ -325,7 +363,6 @@ struct NekaStrukturica {
 };
 
 auto nez(Rows &rows) {
-    /* TODO: finish later
     std::vector<NekaStrukturica> lol(rows[0].size()-1);
     for (int column = 0; column < (int)rows[0].size()-1; ++column) {
         sort(rows.begin(), rows.end(), [column](const Row &a, const Row &b){
@@ -366,8 +403,8 @@ auto nez(Rows &rows) {
         }
     }
     return lol;
-    */
 }
+*/
 
 void print_tree(Node *node, const std::string &spacing="") {
     if (node->isLeaf) {
@@ -522,7 +559,7 @@ void getData(const std::string &filestub, Rows &data) {
     fin.close();
 
     uniqueValueCount.resize(data[0].size()-1);
-    for (int column = 0; column < data[0].size()-1; ++column) {
+    for (int column = 0; column < (int)data[0].size()-1; ++column) {
         uniqueValueCount[column] = feature_values(column, data).size();
     }
 
@@ -538,22 +575,80 @@ float AUC(int TP, int TN, int FP, int FN) {
     return (1.f*TP/(TP+FN) + 1.f*TN/(FP+TN))/2.f;
 }
 
-float fMeasure(int TP, int TN, int FP, int FN) {
+float fMeasure(int TP, int , int FP, int FN) {
     float precision = 1.*TP/(TP+FP);
     float sensitivity = 1.*TP/(TP+FN);
     return 2.*precision*sensitivity/(precision+sensitivity);
 }
 
 int main(int argc, char **argv) {
+    if (argc < 2 || strcmp(argv[1], "-h") == 0) {
+        fprintf(stderr, "-h\tTo display this help message\n");
+        fprintf(stderr, "-s\tTo set the seed, 69 by default\n");
+        fprintf(stderr, "-HD\tuse Hellinger distance\n");
+        fprintf(stderr, "-f\tset filestem, expects <filestem>.data and <filestem>.names\n");
+        // fprintf(stderr, "-t\tuse separate test file, expected <filestem>.test\n"); later
+        fprintf(stderr, "-T\tset train to test ratio if no separate test file, 0.7 by default\n");
+        fprintf(stderr, "-b\tset max buckets for continuous values, 10 by default\n");
+        fprintf(stderr, "-d\tset max depth, 999 by default\n");
+        // fprintf(stderr, "-c\tset cross validation\n"); later
+        return 0;
+    }
+    int seed = 69;
+    bool hellinger = false;
+    std::string filestem; // ew std::string
+    float train_to_test_ratio = 0.7f;
+    int max_buckets = 10;
+    int max_depth = 999;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "-s") == 0) {
+            if (++i < argc) {
+                seed = std::atoi(argv[i]);
+            } else {
+                fprintf(stderr, "-s requires a value");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-HD") == 0) {
+            hellinger = true;
+        } else if (strcmp(argv[i], "-f") == 0) {
+            if (++i < argc) {
+                filestem = argv[i];
+            } else {
+                fprintf(stderr, "-f requires a value");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-T") == 0) {
+            if (++i < argc) {
+                train_to_test_ratio = std::atof(argv[i]);
+            } else {
+                fprintf(stderr, "-T requires a value");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-b") == 0) {
+            if (++i < argc) {
+                max_buckets = std::atoi(argv[i]);
+            } else {
+                fprintf(stderr, "-b requires a value");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-d") == 0) {
+            if (++i < argc) {
+                max_depth = std::atoi(argv[i]);
+            } else {
+                fprintf(stderr, "-d requires a value");
+                return 1;
+            }
+        }
+    }
+
     Instrumentor::get().beginSession("HDTV");
-    std::srand(SEED);
-    char filestub[512]; scanf("%s", filestub);
+    std::srand(seed);
     Rows data;
-    getData(std::string(filestub), data); // ew std::string
+    getData(filestem, data);
 
     Rows training_data, testing_data;
     std::random_shuffle(data.begin(), data.end());
-    int trainCount = data.size()*TRAIN_TO_TEST_RATIO;
+    int trainCount = data.size()*train_to_test_ratio;
     training_data.resize(trainCount);
     testing_data.resize(data.size()-trainCount);
     std::copy_n(data.begin(), trainCount, training_data.begin());
@@ -562,8 +657,14 @@ int main(int argc, char **argv) {
     //auto nn = nez(training_data);
     std::random_shuffle(training_data.begin(), training_data.end()); // unsort
 
-    fprintf(stderr, "Building tree...\n");
-    Node *tree = build_tree(training_data);
+    Node *tree;
+    if (hellinger) {
+        fprintf(stderr, "Building Hellinger tree...\n");
+        tree = build_hellinger_tree(training_data, max_depth, max_buckets);
+    } else {
+        fprintf(stderr, "Building decision tree...\n");
+        tree = build_decision_tree(training_data, max_depth, max_buckets);
+    }
     printf("\n");
     //print_tree(tree);
     float sum = 0;
