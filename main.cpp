@@ -1,17 +1,16 @@
 #include <algorithm>
-#include <iostream>
 #include <fstream>
 #include <numeric>
 #include <vector>
 #include <string>
 #include <set>
+#include <map>
 
 #include <cstdio>
 #include <cmath>
 
 #include "profiler.hpp"
 
-// TODO: kad su vrijednosti continuous, podijeli u N buckets umjesto svih mogucih vrijednosti
 // TODO: implementiraj multi-class hellinger distance
 // TODO: dodaj commandline arguments
 // TODO: sve osim stats u log file or sth
@@ -25,16 +24,17 @@ const float TRAIN_TO_TEST_RATIO = 0.70f;
 const int SEED = 69;
 const int MAX_DEPTH = 999;
 const bool HELLINGER = true;
-const int BUCKETS = 10;
+const int BUCKETS = 100;
 
+// ako je continuous i min je 0.0, a max 1.0 i BUCKETS=10, onda zelim da su bucketi npr 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0
 
-#define PROFILING 0
-#if PROFILING
-#define PROFILE_SCOPE(name) Timer timer##__LINE__(name)
-#define PROFILE_FUNCTION() PROFILE_SCOPE(__FUNCTION__)
+//#define PROFILING
+#ifdef PROFILING
+#define PROFILE_SCOPE(name) Timer timer##__LINE__(name);
+#define PROFILE_FUNCTION PROFILE_SCOPE(__FUNCTION__)
 #else
 #define PROFILE_SCOPE(name)
-#define PROFILE_FUNCTION()
+#define PROFILE_FUNCTION
 #endif
 
 union Z {
@@ -45,15 +45,17 @@ union Z {
     Z(float x): f(x) {}
 };
 
+using Row = std::vector<Z>;
+using Rows = std::vector<Row>;
+
 int minorityClass;
 std::vector<int> totalHist;
 std::vector<std::string> classes;
 std::vector<std::string> attrNames;
 std::vector<std::vector<std::string>> attrValues; // att[0] == {"b", "o", "x"}
 std::vector<bool> isContinuous;
-
-typedef std::vector<Z> Row;
-typedef std::vector<Row> Rows;
+std::vector<float> mins, maxs;
+std::vector<int> uniqueValueCount;
 
 namespace Utils {
     const double epsilon = 1e-6;
@@ -73,7 +75,6 @@ namespace Utils {
     }
 
     int count(const Rows &rows, int label) {
-        PROFILE_FUNCTION();
         // count only for rows with label == `label`
         int ret = 0;
         for (const auto &row: rows) {
@@ -100,24 +101,15 @@ namespace Utils {
 
 struct Question {
     int column;
-    float value; // TODO type pending // *mozda* nas nije briga
+    Z value; // TODO type pending // *mozda* nas nije briga
 
     bool match(const Row &example) const {
         // Compare the feature value in an example to the
         // feature value in this question.
         if (isContinuous[this->column]) {
-            return example[this->column].f >= this->value;
+            return example[this->column].f >= this->value.f;
         }
-        return example[this->column].i == (int)this->value;
-    }
-
-    void print() const {
-        printf("Is %s ", attrNames[this->column].c_str());
-        if (isContinuous[this->column]) {
-            printf(">= %.3f?\n", this->value);
-            return;
-        }
-        printf("== %s?\n", attrValues[this->column][(int)this->value].c_str());
+        return example[this->column].i == (int)this->value.i;
     }
 };
 
@@ -154,7 +146,6 @@ struct Node {
 };
 
 float gini(const Rows &rows) {
-    PROFILE_FUNCTION();
     /*
     Calculate the Gini Impurity for a list of rows.
 
@@ -176,13 +167,17 @@ std::set<float> feature_values(int col, const Rows &rows) {
     // *mozda* nas to nije briga?
     std::set<float> values;
     for (const auto &row: rows) {
-        values.insert(row[col].f);
+        if (isContinuous[col])
+            values.insert(row[col].f);
+        else
+            values.insert(row[col].i);
     }
     return values;
 }
 
-void partition(const Rows &rows, const Question &question,
-               Rows &true_rows, Rows &false_rows) {
+// u rows koliko ima labela == minorityClass takvih da je question.match(row)
+
+void partition(const Rows &rows, const Question &question, Rows &true_rows, Rows &false_rows) {
     for (const auto &row: rows) {
         if (question.match(row)) {
             true_rows.push_back(row);
@@ -194,28 +189,22 @@ void partition(const Rows &rows, const Question &question,
 
 float info_gain(const Rows &left, const Rows &right,
                 float current_uncertainty) {
-    PROFILE_FUNCTION();
     float p = 1. * left.size() / (left.size() + right.size());
     return current_uncertainty - p*gini(left) - (1-p)*gini(right);
 }
 
-float hellinger_distance(const Rows &left, const Rows &right, float tp) {
-    PROFILE_FUNCTION();
-    float tfwp = Utils::count(right, minorityClass);
-    float tfvp = Utils::count(left, minorityClass);
-    float tfwn = right.size() - tfwp;
-    float tfvn = left.size() - tfvp;
-    float tn = (left.size() + right.size()) - tp;
+float hellinger_distance(int lsize, int rsize, float tp, float tfvp, float tfwp) {
+    float tfvn = lsize - tfvp;
+    float tfwn = rsize - tfwp;
+    float tn = (lsize + rsize) - tp;
     return Utils::sqr(std::sqrt(tfvp/tp) - std::sqrt(tfvn/tn))
          + Utils::sqr(std::sqrt(tfwp/tp) - std::sqrt(tfwn/tn));
 }
 
-void find_best_split(const Rows &rows, float &best_gain, 
-                     Question &best_question) {
-    PROFILE_FUNCTION();
+void find_best_split_indian(const Rows &rows, float &best_gain, 
+                            Question &best_question) {
     best_gain = 0;
     float current_uncertainty = gini(rows);
-    float tp = Utils::count(rows, minorityClass);
     int n_features = rows[0].size() - 1;
     for (int column = 0; column < n_features; ++column) {
         auto values = feature_values(column, rows);
@@ -226,28 +215,98 @@ void find_best_split(const Rows &rows, float &best_gain,
             if (true_rows.size() == 0 || false_rows.size() == 0) {
                 continue;
             }
-            float gain;
-            if (HELLINGER) {
-                gain = hellinger_distance(true_rows, false_rows, tp);
-            } else {
-                gain = info_gain(true_rows, false_rows, current_uncertainty);
-            }
+            float gain = info_gain(true_rows, false_rows, current_uncertainty);
             if (gain > best_gain) {
                 best_gain = gain;
                 best_question = question;
             }
         }
     }
-    if (best_gain == 0) return;
+}
+
+void hellinger_split_continuous(const Rows &rows, int column, int tp,
+                                 float &best_gain, Question &best_question) {
+    float min = mins[column], max = maxs[column];
+    //fprintf(stderr, "%.2f %.2f\n", min, max);
+    float step = (max-min)/BUCKETS;
+    const int buckets = std::min(BUCKETS, uniqueValueCount[column]);
+    for (int bucket = 0; bucket <= buckets; ++bucket) {
+        float value = step*bucket+min;
+        Question question = {column, value};
+        int lsize = 0, rsize = 0;
+        int tfvp = 0, tfwp = 0;
+        for (const auto &row: rows) {
+            if (question.match(row)) {
+                ++lsize;
+                if (row.back().i == minorityClass) ++tfvp;
+            } else {
+                ++rsize;
+                if (row.back().i == minorityClass) ++tfwp;
+            }
+        }
+        if (lsize == 0 || rsize == 0) {
+            continue;
+        }
+        float gain = hellinger_distance(lsize, rsize, tp, tfvp, tfwp);
+        if (gain > best_gain) {
+            best_gain = gain;
+            best_question = question;
+        }
+    }
+}
+
+void hellinger_split_discrete(const Rows &rows, int column, int tp,
+                               float &best_gain, Question &best_question) {
+    for (int value = 0; value < (int)attrValues[column].size(); ++value) {
+        Question question = {column, value};
+        int lsize = 0, rsize = 0;
+        int tfvp = 0, tfwp = 0;
+        for (const auto &row: rows) {
+            if (question.match(row)) {
+                ++lsize;
+                if (row.back().i == minorityClass) ++tfvp;
+            } else {
+                ++rsize;
+                if (row.back().i == minorityClass) ++tfwp;
+            }
+        }
+        if (lsize == 0 || rsize == 0) {
+            continue;
+        }
+        float gain = hellinger_distance(lsize, rsize, tp, tfvp, tfwp);
+        if (gain > best_gain) {
+            best_gain = gain;
+            best_question = question;
+        }
+    }
+}
+
+void find_best_split_hellinger(const Rows &rows, 
+                               float &best_gain, Question &best_question) {
+    best_gain = 0;
+    float tp = Utils::count(rows, minorityClass);
+    int n_features = rows[0].size() - 1;
+    for (int column = 0; column < n_features; ++column) {
+        if (isContinuous[column]) {
+            hellinger_split_continuous(rows, column, tp, best_gain, best_question);
+        } else {
+            hellinger_split_discrete(rows, column, tp, best_gain, best_question);
+        }
+    }
 }
 
 Node *build_tree(const Rows &rows, int depth=MAX_DEPTH) {
-    float gain;
+    float gain; 
     Question question;
     if (depth == 0) {
         return Node::Leaf(rows);
     }
-    find_best_split(rows, gain, question);
+    if (HELLINGER) {
+        // nez
+        find_best_split_hellinger(rows, gain, question);
+    } else {
+        find_best_split_indian(rows, gain, question);
+    }
     if (Utils::eq(gain, 0)) {
         return Node::Leaf(rows);
     }
@@ -257,6 +316,57 @@ Node *build_tree(const Rows &rows, int depth=MAX_DEPTH) {
     Node *true_branch = build_tree(true_rows, depth-1);
     Node *false_branch = build_tree(false_rows, depth-1);
     return Node::DecisionNode(true_branch, false_branch, question);
+}
+
+struct NekaStrukturica {
+    //lol[5][3]; // za atribut 5 cija je vrijednost >= BUCKET[0.3] koliko ima minority klasa?
+    std::vector<int> count;
+    Z min, max;
+};
+
+auto nez(Rows &rows) {
+    /* TODO: finish later
+    std::vector<NekaStrukturica> lol(rows[0].size()-1);
+    for (int column = 0; column < (int)rows[0].size()-1; ++column) {
+        sort(rows.begin(), rows.end(), [column](const Row &a, const Row &b){
+            if (isContinuous[column]) {
+                return a[column].f < b[column].f;
+            }
+            return a[column].i < b[column].i;
+        });
+        if (isContinuous[column]) {
+            lol[column].min = rows[0][column];
+            lol[column].max = rows.back()[column];
+            lol[column].count.resize(BUCKETS);
+            fprintf(stderr, "\ncol: %d; min: %.2f; max: %.2f;\n", column, lol[column].min.f, lol[column].max.f);
+        } else {
+            lol[column].min = rows[0][column];
+            lol[column].max = rows.back()[column];
+            lol[column].count.resize(lol[column].max.i - lol[column].min.i + 1);
+            fprintf(stderr, "col: %d; min: %d; max: %d; size: %d\n", column, lol[column].min.i, lol[column].max.i, lol[column].count.size());
+        }
+        float prevf = 0;
+        if (isContinuous[column]) {
+            for (int bucket = 0; bucket < BUCKETS; ++bucket) {
+                float f = rows[row][column].f-prevf;
+                float step = (lol[column].max.f-lol[column].min.f)/BUCKETS;
+                if (row == 0 || f > step) {
+                    prevf = f;
+                    lol[column].count[bucket++] = rows.size()-row;
+                    fprintf(stderr, "row: %d; bucket: %d (%.2f); count: %d;\n", row, bucket-1, prevf, lol[column].count[bucket-1]);
+                }
+            }
+        } else {
+            for (int row = 0, bucket = 0; row < (int)rows.size(); ++row) {
+                if (row == 0 || (rows[row][column].i != rows[column][row-1].i)) {
+                    lol[column].count[rows[row][column].i] = rows.size()-row;
+                    fprintf(stderr, "row: %d; index: %d; count: %d;\n", row, rows[row][column].i, lol[column].count[rows[row][column].i]);
+                }
+            }
+        }
+    }
+    return lol;
+    */
 }
 
 void print_tree(Node *node, const std::string &spacing="") {
@@ -272,7 +382,12 @@ void print_tree(Node *node, const std::string &spacing="") {
         return;
     }
     printf("%s", spacing.c_str());
-    node->question.print();
+    printf("Is %s ", attrNames[node->question.column].c_str());
+    if (isContinuous[node->question.column]) {
+        printf(">= %.3f?\n", node->question.value.f);
+        return;
+    }
+    printf("== %s?\n", attrValues[node->question.column][(int)node->question.value.i].c_str());
 
     printf("%s--> True:\n", spacing.c_str());
     print_tree(node->left, spacing+"  ");
@@ -322,7 +437,6 @@ std::vector<std::string> parseLine(const std::string &line, char delimiter=',') 
 }
 
 void makeDatastructure(const std::string &filePath) {
-    PROFILE_FUNCTION();
     std::ifstream fin(filePath);
     std::string line;
     bool getClasses = true;
@@ -336,9 +450,7 @@ void makeDatastructure(const std::string &filePath) {
         } else if (getClasses) {
             classes = parseLine(line);
             if (classes.size() == 1) {
-                std::cerr << line << std::endl;
-                std::cerr << classes[0] << std::endl;
-                std::cerr << "What are you doing with just one class lol" << std::endl;
+                fprintf(stderr, "%s\n%s\nWhat are you doing with just one class lol\n", line.c_str(), classes[0].c_str());
                 exit(1);
             }
             getClasses = false;
@@ -353,19 +465,20 @@ void makeDatastructure(const std::string &filePath) {
             attrValues.push_back(parseLine(line));
             isContinuous.push_back(attrValues.back()[0] == "continuous");
         } else {
-            std::cerr << "Unsupported .names file, check line " << lineno << std::endl;
+            fprintf(stderr, "Unsupported .names file, check line %d\n", lineno);
+            fin.close();
             exit(1);
         }
     }
+    fin.close();
 }
 
-void getData(const std::string &filestub, 
-             Rows &training_data, Rows &testing_data) {
-    PROFILE_FUNCTION();
+void getData(const std::string &filestub, Rows &data) {
     makeDatastructure(filestub+".names");
-    Rows data;
     std::ifstream fin(filestub+".data");
     std::string line;
+    mins.resize(attrValues.size(), NAN);
+    maxs.resize(attrValues.size(), NAN);
     for (int lineno = 0; getline(fin, line); ++lineno) {
         auto values = parseLine(line);
         data.emplace_back(values.size());
@@ -376,17 +489,22 @@ void getData(const std::string &filestub,
             }
             if (isContinuous[i]) {
                 data.back()[i].f = std::atof(values[i].c_str());
+                if (std::isnan(mins[i])) {
+                    mins[i] = data.back()[i].f;
+                    maxs[i] = data.back()[i].f;
+                }
+                mins[i] = std::min(mins[i], data.back()[i].f);
+                maxs[i] = std::max(maxs[i], data.back()[i].f);
             } else {
                 auto x = std::find(attrValues[i].begin(),
                                    attrValues[i].end(),
                                    values[i]);
                 if (x == attrValues[i].end()) {
-                    std::cerr << "Looking for \"" << values[i] << "\" in:" << std::endl;
+                    fprintf(stderr, "Looking for \"%s\" in:\n", values[i].c_str());
                     for (const auto &v: attrValues[i]) {
-                        std::cerr << v << ", ";
+                        fprintf(stderr, "%s, ", v.c_str());
                     }
-                    std::cerr << "\nCheck line " << lineno << std::endl;
-                    std::cerr << "That don't exist bro." << std::endl;
+                    fprintf(stderr, "\nCheck line %d\nThat don't exist bro.\n", lineno);
                     exit(1);
                 }
                 data.back()[i].i = x-attrValues[i].begin();
@@ -396,26 +514,24 @@ void getData(const std::string &filestub,
                            classes.end(),
                            values.back());
         if (x == classes.end()) {
-            std::cerr << "That class don't exist bro." << std::endl;
+            fprintf(stderr, "That class don't exist bro.");
             exit(1);
         }
         data.back().back().i = x-classes.begin();
     }
     fin.close();
 
-    std::random_shuffle(data.begin(), data.end());
-    int trainCount = data.size()*TRAIN_TO_TEST_RATIO;
-    training_data.resize(trainCount);
-    testing_data.resize(data.size()-trainCount);
-    std::copy_n(data.begin(), trainCount, training_data.begin());
-    std::copy_n(data.rbegin(), data.size()-trainCount, testing_data.begin());
+    uniqueValueCount.resize(data[0].size()-1);
+    for (int column = 0; column < data[0].size()-1; ++column) {
+        uniqueValueCount[column] = feature_values(column, data).size();
+    }
 
-    minorityClass = min_element(totalHist.begin(), totalHist.end())-totalHist.begin();
     if (classes.size() == 2) { // TODO: bilo bi lipo da radi i za vise od 2 klasice
         totalHist.resize(2);
         totalHist[0] = Utils::count(data, 0);
         totalHist[1] = data.size()-totalHist[0];
     }
+    minorityClass = min_element(totalHist.begin(), totalHist.end())-totalHist.begin();
 }
 
 float AUC(int TP, int TN, int FP, int FN) {
@@ -430,25 +546,35 @@ float fMeasure(int TP, int TN, int FP, int FN) {
 
 int main(int argc, char **argv) {
     Instrumentor::get().beginSession("HDTV");
-    PROFILE_FUNCTION();
     std::srand(SEED);
+    char filestub[512]; scanf("%s", filestub);
+    Rows data;
+    getData(std::string(filestub), data); // ew std::string
+
     Rows training_data, testing_data;
-    std::string filestub; std::cin >> filestub; // e.g. "phoneme"
-    getData(filestub, training_data, testing_data);
+    std::random_shuffle(data.begin(), data.end());
+    int trainCount = data.size()*TRAIN_TO_TEST_RATIO;
+    training_data.resize(trainCount);
+    testing_data.resize(data.size()-trainCount);
+    std::copy_n(data.begin(), trainCount, training_data.begin());
+    std::copy_n(data.rbegin(), data.size()-trainCount, testing_data.begin());
+    
+    //auto nn = nez(training_data);
+    std::random_shuffle(training_data.begin(), training_data.end()); // unsort
 
     fprintf(stderr, "Building tree...\n");
     Node *tree = build_tree(training_data);
     printf("\n");
-    print_tree(tree);
+    //print_tree(tree);
     float sum = 0;
     int TP = 0, TN = 0, FP = 0, FN = 0;
     int truers = 0;
     for (const auto &row: testing_data) {
-        printf("Actual: %s. Predicted: ", classes[row.back().i].c_str());
+        //printf("Actual: %s. Predicted: ", classes[row.back().i].c_str());
         int actual = row.back().i;
         const auto hist = classify(row, tree);
         float total = std::accumulate(hist.begin(), hist.end(), 0);
-        print_leaf(hist, total);
+        //print_leaf(hist, total);
         int prediction = std::max_element(hist.begin(), hist.end())-hist.begin();
         sum += hist[actual]/total;
         if (totalHist.size() == 2) {
