@@ -141,7 +141,7 @@ namespace Utils {
 
 struct Question {
     int column;
-    Z value; // TODO type pending // *mozda* nas nije briga ?
+    Z value; // TODO type pending // *mozda* nas nije briga
 
     int match(const Row &example, bool c45 = false) const { // a0: 5, a1: "burek", a2: 6
         // Compare the feature value in an example to the
