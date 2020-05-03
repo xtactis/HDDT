@@ -12,10 +12,7 @@
 *** STO NEVALJA ***
 
 1. "weights" su nam krivo pretpostavljeni da trebaju biti 1
-    - trebalo bi ih se racunati pri svakom splittanju kao new_rows/rows * prev_weight
-    - weight actually treba dodati
-    - zatim fixati u AUC
-    - iz ovog razloga su nam svi modeli "bolji" od autorovih
+    - smanje se za rows koji kad splittamo na atributu s missing value
 2. hellingera krivo izracunavamo jer smo retardirani
     - za diskretne slucajeve je kompletno krivo (kinda emulira continuous)
     - za "continumous" radi samo za 2 klase
@@ -36,6 +33,7 @@
 // TODO: implementiraj multi-class hellinger distance // lol
 // TODO: sve osim stats u log file or sth
 // TODO: dodaj cross validation
+// TODO: handle missing data
 // TODO: dodaj grid search za hiperparametre
 // TODO: dodaj mogucnost spremanja stvorenog stabla
 // TODO: fixati apsolutno sve da nije ovako fugly
@@ -951,7 +949,7 @@ int main(int argc, char **argv) {
         }
     }
     printf("\n");
-    print_tree(tree);
+    //print_tree(tree);
     float sum = 0;
     int TP = 0, TN = 0, FP = 0, FN = 0;
     int truers = 0;
