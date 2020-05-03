@@ -8,7 +8,7 @@
 #include <cmath>
 #include <cstring>
 
-/* test
+/* 
 *** STO NEVALJA ***
 
 1. "weights" su nam krivo pretpostavljeni da trebaju biti 1
