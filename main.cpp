@@ -9,10 +9,11 @@
 #include <cstring>
 
 /* 
-*** STO NEVALJA ***
+*** STO NEVALJA *** TODO
 
 1. "weights" su nam krivo pretpostavljeni da trebaju biti 1
     - smanje se za rows koji kad splittamo na atributu s missing value
+    
 2. hellingera krivo izracunavamo jer smo retardirani
     - za diskretne slucajeve je kompletno krivo (kinda emulira continuous)
     - za "continumous" radi samo za 2 klase
@@ -59,7 +60,7 @@
 #define PROFILE_FUNCTION
 #endif
 
-union Z {
+union Z { // to cast or not to cast, ma samo unija fuck it
     int i;
     float f;
     Z() {}
@@ -67,7 +68,7 @@ union Z {
     Z(float x): f(x) {}
 };
 
-using Row = std::vector<Z>;
+using Row = std::vector<Z>*; // first = actual podaci, second = weight tog reda
 using Rows = std::vector<Row>;
 
 int minorityClass; // TODO: get rid of these globals, legitimately just send them to everything that uses them
@@ -89,7 +90,7 @@ namespace Utils {
         // filter only for rows with label == `label`
         Rows new_rows;
         for (const auto &row: rows) {
-            if (row.back().i == label) {
+            if (row->back().i == label) {
                 new_rows.push_back(row);
             }
         }
@@ -97,6 +98,17 @@ namespace Utils {
     }
 
     int count(const Rows &rows, int label) {
+        // count only for rows with label == `label`
+        int ret = 0;
+        for (const auto &row: rows) {
+            if (row->back().i == label) {
+                ++ret;
+            }
+        }
+        return ret;
+    }
+
+    int count(const std::vector<std::vector<Z>> &rows, int label) {
         // count only for rows with label == `label`
         int ret = 0;
         for (const auto &row: rows) {
@@ -145,12 +157,12 @@ struct Question {
         // Compare the feature value in an example to the
         // feature value in this question.
         if (isContinuous[column]) {
-            return example[column].f >= value.f;
+            return (*example)[column].f >= value.f;
         }
         if (c45) { // returns the index of the value in attrValues[column]
-            return example[column].i;
+            return (*example)[column].i;
         }
-        return example[column].i == (int)value.i;
+        return (*example)[column].i == value.i;
     }
 };
 
@@ -160,7 +172,7 @@ std::vector<int> class_histogram(const Rows &rows) {
     */
     std::vector<int> histogram(classes.size(), 0);
     for (const auto &row: rows) {
-        int label = row.back().i;
+        int label = row->back().i;
         ++histogram[label];
     }
     return histogram;
@@ -238,6 +250,19 @@ float informationGainRatio(const Rows &rows, const std::vector<Rows> &splits, fl
 }
 
 std::set<float> feature_values(int col, const Rows &rows) {
+    // TODO: ne moze ostati float, ovisit ce o tipu attr
+    // *mozda* nas to nije briga?
+    std::set<float> values;
+    for (const auto &row: rows) {
+        if (isContinuous[col])
+            values.insert((*row)[col].f);
+        else
+            values.insert((*row)[col].i);
+    }
+    return values;
+} 
+
+std::set<float> feature_values(int col, const std::vector<std::vector<Z>> &rows) {
     // TODO: ne moze ostati float, ovisit ce o tipu attr
     // *mozda* nas to nije briga?
     std::set<float> values;
@@ -327,7 +352,7 @@ void find_best_split_indian(const Rows &rows, float &best_gain,
                             Question &best_question, int max_buckets) {
     best_gain = 0;
     float current_uncertainty = gini(rows);
-    int n_features = rows[0].size() - 1;
+    int n_features = rows[0]->size() - 1;
     for (int column = 0; column < n_features; ++column) {
         if (isContinuous[column]) {
             split_continuous(rows, column, current_uncertainty, best_gain, best_question, max_buckets);
@@ -367,10 +392,10 @@ void hellinger_split_continuous(const Rows &rows, int column, int tp,
         for (const auto &row: rows) {
             if (question.match(row)) {
                 ++lsize;
-                if (row.back().i == minorityClass) ++tfvp;
+                if (row->back().i == minorityClass) ++tfvp;
             } else {
                 ++rsize;
-                if (row.back().i == minorityClass) ++tfwp;
+                if (row->back().i == minorityClass) ++tfwp;
             }
         }
         if (lsize == 0 || rsize == 0) {
@@ -393,10 +418,10 @@ void hellinger_split_discrete(const Rows &rows, int column, int tp,
         for (const auto &row: rows) {
             if (question.match(row)) {
                 ++lsize;
-                if (row.back().i == minorityClass) ++tfvp;
+                if (row->back().i == minorityClass) ++tfvp;
             } else {
                 ++rsize;
-                if (row.back().i == minorityClass) ++tfwp;
+                if (row->back().i == minorityClass) ++tfwp;
             }
         }
         if (lsize == 0 || rsize == 0) {
@@ -415,7 +440,7 @@ void find_best_split_hellinger(const Rows &rows,
                                int max_buckets) {
     best_gain = 0;
     float tp = Utils::count(rows, minorityClass);
-    int n_features = rows[0].size() - 1;
+    int n_features = rows[0]->size() - 1;
     for (int column = 0; column < n_features; ++column) {
         if (isContinuous[column]) {
             hellinger_split_continuous(rows, column, tp, best_gain, best_question, max_buckets);
@@ -469,7 +494,7 @@ void find_best_split_C45_IG(const Rows &rows,
                             int max_buckets) {
     best_gain = 0;
     float beforeEntropy = entropy(rows);
-    int n_features = rows[0].size() - 1;
+    int n_features = rows[0]->size() - 1;
     for (int column = 0; column < n_features; ++column) {
         if (isContinuous[column]) {
             IG_split_continuous(rows, column, beforeEntropy, best_gain, best_question, max_buckets);
@@ -537,45 +562,6 @@ Node *build_C45_tree(const Rows &rows, int depth, int max_buckets) {
         }
     }
     return node;
-}
-
-// DEPRECATED
-Node *build_hellinger_tree(const Rows &rows, int depth, int max_buckets) {
-    float gain; 
-    Question question;
-    if (depth == 0) {
-        return Leaf(rows);
-    }
-    // nez
-    find_best_split_hellinger(rows, gain, question, max_buckets);
-    if (Utils::eq(gain, 0)) {
-        return Leaf(rows);
-    }
-    Rows true_rows, false_rows;
-    partition(rows, question, true_rows, false_rows);
-
-    Node *true_branch = build_hellinger_tree(true_rows, depth-1, max_buckets);
-    Node *false_branch = build_hellinger_tree(false_rows, depth-1, max_buckets);
-    return DecisionNodeContinuous(true_branch, false_branch, question);
-}
-
-// DEPRECATED
-Node *build_decision_tree(const Rows &rows, int depth, int max_buckets) {
-    float gain; 
-    Question question;
-    if (depth == 0) {
-        return Leaf(rows);
-    }
-    find_best_split_indian(rows, gain, question, max_buckets);
-    if (Utils::eq(gain, 0)) {
-        return Leaf(rows);
-    }
-    Rows true_rows, false_rows;
-    partition(rows, question, true_rows, false_rows);
-
-    Node *true_branch = build_decision_tree(true_rows, depth-1, max_buckets);
-    Node *false_branch = build_decision_tree(false_rows, depth-1, max_buckets);
-    return DecisionNodeContinuous(true_branch, false_branch, question);
 }
 
 /* TODO: finish later
@@ -730,7 +716,7 @@ void makeDatastructure(const std::string &filePath) {
     fin.close();
 }
 
-void getData(const std::string &filestub, Rows &data) {
+void getData(const std::string &filestub, std::vector<std::vector<Z>> &data) {
     makeDatastructure(filestub+".names");
     std::ifstream fin(filestub+".data");
     std::string line;
@@ -789,6 +775,12 @@ void getData(const std::string &filestub, Rows &data) {
         totalHist[1] = data.size()-totalHist[0];
     }
     minorityClass = min_element(totalHist.begin(), totalHist.end())-totalHist.begin();
+}
+
+void makeDataset(std::vector<std::vector<Z>> &data, unsigned int offset, Rows &dataset) {
+    for (int i = offset; i < (int)(offset+dataset.size()); ++i) {
+        dataset[i-offset] = &data[i];
+    }
 }
 
 float accuracy(int TP, int TN, int FP, int FN) {
@@ -919,7 +911,7 @@ int main(int argc, char **argv) {
 
     BEGIN_SESSION("HDTV"); 
     std::srand(seed);
-    Rows data;
+    std::vector<std::vector<Z>> data;
     getData(filestem, data);
 
     Rows training_data, testing_data;
@@ -927,8 +919,8 @@ int main(int argc, char **argv) {
     int trainCount = data.size()*train_to_test_ratio;
     training_data.resize(trainCount);
     testing_data.resize(data.size()-trainCount);
-    std::copy_n(data.begin(), trainCount, training_data.begin());
-    std::copy_n(data.rbegin(), data.size()-trainCount, testing_data.begin());
+    makeDataset(data, 0, training_data);
+    makeDataset(data, trainCount, testing_data);
     
     //auto nn = nez(training_data);
     std::random_shuffle(training_data.begin(), training_data.end()); // unsort
@@ -955,7 +947,7 @@ int main(int argc, char **argv) {
     int truers = 0;
     std::vector<std::vector<double>> probs;
     for (const auto &row: testing_data) {
-        int actual = row.back().i;
+        int actual = row->back().i;
         const auto hist = classify(row, tree, C45);
         float total = Utils::accumulate(hist);
         probs.emplace_back();
@@ -964,7 +956,7 @@ int main(int argc, char **argv) {
             probs.back().push_back(1.*(e+1)/(total + classes.size()));
             //printf("%f ", probs.back().back());
         }
-        probs.back().push_back(row.back().i);
+        probs.back().push_back(row->back().i);
         //printf("%f\n", probs.back().back());
         //printf("Actual: %s. Predicted: ", classes[row.back().i].c_str()); print_leaf(hist, total);
         int prediction = std::max_element(hist.begin(), hist.end())-hist.begin();
