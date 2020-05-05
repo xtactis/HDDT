@@ -28,15 +28,13 @@
 
 */
 
-// TODO: implementiraj hellinger C4.5 | zajebano
-// TODO: implementiraj multi-class hellinger distance // lol | zajebano
+// TODO: implementiraj multi-class hellinger distance za CART algoritam 
 // TODO: sve osim stats u log file or sth | ultra ez
 // TODO: dodaj cross validation | medium
 // TODO: handle missing data | medium-zajebano
 // TODO: dodaj grid search za hiperparametre | medium
 // TODO: dodaj mogucnost spremanja stvorenog stabla | kinda ez-medium
 // TODO: fixati apsolutno sve da nije ovako fugly | zajebano
-// TODO: nemoj koristiti std::vector nego napravi nesto svoje sto ce imati countove potrebne za hellingera | zajebano i probably nepotrebno
 
 // lol
 // TODO: multi-core | samo kinda zajebano
@@ -44,7 +42,6 @@
 // TODO: hellinger net????? lol | ultra zajebano delaj u pajtonima
 
 #define DEBUG(text) fprintf(stderr, "%d: %s\n", __LINE__, text);
-#define	 Log2			0.69314718055994530942
 
 //#define PROFILING
 #ifdef PROFILING
@@ -133,7 +130,7 @@ namespace Utils {
         if (eq(x, 0)) {
             return 0;
         } else {
-            return logf(x)/Log2;
+            return log2f(x);
         }
     }
 }
