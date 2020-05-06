@@ -15,7 +15,7 @@
 2. hellingera krivo izracunavamo jer smo retardirani
     - za diskretne slucajeve je kompletno krivo (kinda emulira continuous)
     - za "continumous" radi samo za 2 klase
-    - NOTE: vAttrClassCnts[][] pribrojava sve weights u rows za trenutacni atribut gdje
+    - NOTE: attrClassCnts[][] pribrojava sve weights u rows za trenutacni atribut gdje
             prvi [] odgovara vrijednosti atributa, a drugi klasi na kraju rowa
 
 3. krucijalno, sve je presporo, a C4.5 je mozda najsporija stvar ikad napisana
@@ -28,10 +28,10 @@
 
 */
 
-// TODO: implementiraj multi-class hellinger distance za CART algoritam 
 // TODO: sve osim stats u log file or sth | ultra ez
 // TODO: dodaj cross validation | medium
 // TODO: handle missing data | medium-zajebano
+// TODO: implementiraj multi-class hellinger distance za CART algoritam 
 // TODO: dodaj grid search za hiperparametre | medium
 // TODO: dodaj mogucnost spremanja stvorenog stabla | kinda ez-medium
 // TODO: fixati apsolutno sve da nije ovako fugly | zajebano
@@ -455,10 +455,10 @@ void hellinger_split_continuous(const Rows &rows, int column, int tp,
 void hellinger_split_discrete(const Rows &rows, int column, int tp,
                               float &best_gain, Question &best_question,
                               bool c45) {
-    std::vector<std::vector<float>> vAttrClassCnts(attrValues[column].size(), std::vector<float>(classes.size()));
-    for (const auto &row: rows) {
-        vAttrClassCnts[row[column].i][row.back().i] += 1.0f; // should be weight
-    }
+    //std::vector<std::vector<float>> attrClassCnts(attrValues[column].size(), std::vector<float>(classes.size()));
+    /*for (const auto &row: rows) {
+        attrClassCnts[row[column].i][row.back().i] += 1.0f; // should be weight
+    }*/
     for (int value = 0; value < (int)attrValues[column].size(); ++value) {
         Question question = {column, value};
         int lsize = 0, rsize = 0;
@@ -535,35 +535,53 @@ void new_hellinger_split_continuous(Rows &rows, int column,
 }
 
 void new_hellinger_split_discrete(const Rows &rows, int column,
-                              float &best_gain, Question &best_question) {
-    std::vector<std::vector<float>> vAttrClassCnts(attrValues[column].size(), std::vector<float>(classes.size()));
+                                  float &best_gain, Question &best_question) {
+    std::vector<std::vector<float>> attrClassCnts(attrValues[column].size(), std::vector<float>(classes.size()));
     for (const auto &row: rows) {
-        vAttrClassCnts[row[column].i][row.back().i] += 1.0f; // should be weight
+        attrClassCnts[row[column].i][row.back().i] += 1.0f; // should be weight
     }
-    float dblsum= 0;
+    int legitChildren = 0;
+    for (int i = 0; i < (int)attrValues[column].size(); ++i) {
+        float size = 0.0f;
+        for (int j = 0; j < (int)classes.size(); ++j) {
+            size += attrClassCnts[i][j];
+        }
+        if (size > 0) {
+            ++legitChildren;
+        }
+    }
+    if (legitChildren < 2) {
+        // no branching, don't process or update gain/question
+        return;
+    }
+
+    float dblsum = 0;
 	int nPairs = 0;
     for (int c1 = 0; c1 < (int)classes.size()-1; ++c1) {
         for (int c2 = c1+1; c2 < (int)classes.size(); ++c2) {
-            float nX1=0, nX2 = 0;
-			for(int k=0; k < (int)attrValues[column].size(); ++k){
-				nX1+=vAttrClassCnts[k][c1];
-				nX2+=vAttrClassCnts[k][c2];
+            float nX1 = 0, nX2 = 0;
+			for(int k = 0; k < (int)attrValues[column].size(); ++k){
+				nX1+=attrClassCnts[k][c1];
+				nX2+=attrClassCnts[k][c2];
 			}
-			float fradicand=0;
-			//find size of X1j and X2j -- vAttrClassCnts[j][0], [j][1]
+			float fradicand = 0;
+			//find size of X1j and X2j -- attrClassCnts[j][0], [j][1]
 			//sum up the radicand 
-			for(int k=0; k < (int)vAttrClassCnts.size()-1; ++k){
-				float nX1j = vAttrClassCnts[k][c1];
-				float nX2j = vAttrClassCnts[k][c2];    
+			for(int k = 0; k < (int)attrValues[column].size(); ++k){
+				float nX1j = attrClassCnts[k][c1];
+				float nX2j = attrClassCnts[k][c2];    
 
-				fradicand += Utils::sqr((sqrt((float)nX1j/nX1) - sqrt((float)nX2j/nX2)));
+				fradicand += Utils::sqr((sqrt(1.*nX1j/nX1) - sqrt(1.*nX2j/nX2)));
 			}
 			dblsum += sqrt(fradicand);
 			nPairs++;
         }
     }
-    best_gain = dblsum/nPairs;
-    best_question = {column, 0};
+    float gain = dblsum/nPairs;
+    if (gain > best_gain) {
+        best_gain = gain;
+        best_question = {column, 0};
+    }
 }
 
 void find_best_split_hellinger(Rows &rows,
@@ -662,9 +680,9 @@ void find_best_split_C45_IGR(Rows &rows,
     }
 }
 
-void find_best_split_hellinger_C45(Rows &rows,
-                               float &best_gain, Question &best_question,
-                               int, bool) {
+void find_best_split_C45_hellinger(Rows &rows,
+                                   float &best_gain, Question &best_question,
+                                   int, bool) {
     best_gain = 0;
     int n_features = rows[0].size() - 1;
     for (int column = 0; column < n_features; ++column) {
@@ -683,7 +701,6 @@ Node *build_CART_tree(Rows &rows, int depth, int max_buckets) {
     if (depth == 0) {
         return Leaf(rows);
     }
-    // nez
     split_function(rows, gain, question, max_buckets, false);
     if (Utils::eq(gain, 0)) {
         return Leaf(rows);
@@ -704,7 +721,6 @@ Node *build_C45_tree(Rows &rows, int depth, int max_buckets) {
         return Leaf(rows);
     }
     split_function(rows, gain, question, max_buckets, true);
-    
     if (Utils::eq(gain, 0)) {
         return Leaf(rows);
     }
@@ -727,57 +743,6 @@ Node *build_C45_tree(Rows &rows, int depth, int max_buckets) {
     }
     return node;
 }
-
-/* TODO: finish later
-struct NekaStrukturica {
-    //lol[5][3]; // za atribut 5 cija je vrijednost >= BUCKET[0.3] koliko ima minority klasa?
-    std::vector<int> count;
-    Z min, max;
-};
-
-auto nez(Rows &rows) {
-    std::vector<NekaStrukturica> lol(rows[0].size()-1);
-    for (int column = 0; column < (int)rows[0].size()-1; ++column) {
-        sort(rows.begin(), rows.end(), [column](const Row &a, const Row &b){
-            if (isContinuous[column]) {
-                return a[column].f < b[column].f;
-            }
-            return a[column].i < b[column].i;
-        });
-        if (isContinuous[column]) {
-            lol[column].min = rows[0][column];
-            lol[column].max = rows.back()[column];
-            lol[column].count.resize(BUCKETS);
-            fprintf(stderr, "\ncol: %d; min: %.2f; max: %.2f;\n", column, lol[column].min.f, lol[column].max.f);
-        } else {
-            lol[column].min = rows[0][column];
-            lol[column].max = rows.back()[column];
-            lol[column].count.resize(lol[column].max.i - lol[column].min.i + 1);
-            fprintf(stderr, "col: %d; min: %d; max: %d; size: %d\n", column, lol[column].min.i, lol[column].max.i, lol[column].count.size());
-        }
-        float prevf = 0;
-        if (isContinuous[column]) {
-            for (int bucket = 0; bucket < BUCKETS; ++bucket) {
-                float f = rows[row][column].f-prevf;
-                float step = (lol[column].max.f-lol[column].min.f)/BUCKETS;
-                if (row == 0 || f > step) {
-                    prevf = f;
-                    lol[column].count[bucket++] = rows.size()-row;
-                    fprintf(stderr, "row: %d; bucket: %d (%.2f); count: %d;\n", row, bucket-1, prevf, lol[column].count[bucket-1]);
-                }
-            }
-        } else {
-            for (int row = 0, bucket = 0; row < (int)rows.size(); ++row) {
-                if (row == 0 || (rows[row][column].i != rows[column][row-1].i)) {
-                    lol[column].count[rows[row][column].i] = rows.size()-row;
-                    fprintf(stderr, "row: %d; index: %d; count: %d;\n", row, rows[row][column].i, lol[column].count[rows[row][column].i]);
-                }
-            }
-        }
-    }
-    return lol;
-}
-*/
 
 void print_tree(Node *node, const std::string &spacing="") {
     if (node->isLeaf) {
@@ -805,9 +770,15 @@ void print_tree(Node *node, const std::string &spacing="") {
     }
 }
 
-std::vector<int> classify(const Row &row, Node *node, bool c45 = false) {
+std::vector<float> classify(const Row &row, Node *node, bool c45 = false) {
     if (node->isLeaf) {
-        return node->predictions;
+        const float total = Utils::accumulate(node->predictions);
+        std::vector<float> probs;
+        for (int e: node->predictions) {
+            // LAPLACE
+            probs.push_back(1.*(e+1)/(total + classes.size()));
+        }
+        return probs;
     }
     return classify(row, node->children[node->question.match(row, c45)], c45);
 }
@@ -1022,17 +993,17 @@ void calcStats(const std::vector<int> &TP, const std::vector<int> &TN,
 int main(int argc, char **argv) {
     if (argc < 2 || strcmp(argv[1], "-h") == 0) {
         fprintf(stderr, "-h\tTo display this help message\n");
-        fprintf(stderr, "-s\tTo set the seed, 69 by default\n");
-        fprintf(stderr, "-C45\tuse the C4.5 algorithm for building the decision tree. Will use CART if not specified\n");
-        fprintf(stderr, "-IGR\tif not using HD, use Information Gain Ratio instead of Information Gain.\n");
-        fprintf(stderr, "-HD\tuse Hellinger distance\n");
-        fprintf(stderr, "-f\tset filestem, expects <filestem>.data and <filestem>.names\n");
-        // fprintf(stderr, "-t\tuse separate test file, expected <filestem>.test\n"); later
-        fprintf(stderr, "-T\tset train to test ratio if no separate test file, 0.7 by default\n");
-        fprintf(stderr, "-b\tset max buckets for continuous values, 0 means don't use buckets. 0 by default\n");
-        fprintf(stderr, "-d\tset max depth, 999 by default\n");
-        fprintf(stderr, "-S\tshuffle dataset, off by default\n");
-        // fprintf(stderr, "-c\tset cross validation\n"); later
+        fprintf(stderr, "-s <num>\tTo set the seed, 69 by default\n");
+        fprintf(stderr, "-C45\tUse the C4.5 algorithm for building the decision tree. Will use CART if not specified\n");
+        fprintf(stderr, "-IGR\tIf not using HD, use Information Gain Ratio instead of Information Gain.\n");
+        fprintf(stderr, "-HD\tUse Hellinger distance\n");
+        fprintf(stderr, "-f <filestem>\tSet filestem, expects <filestem>.data and <filestem>.names\n");
+        // fprintf(stderr, "-t\tUse separate test file, expected <filestem>.test\n"); later
+        fprintf(stderr, "-T <num>\tSet train to test ratio if no separate test file, 0.7 by default\n");
+        fprintf(stderr, "-c <num1> <num2>\tCrosstrain <num1> times on <num2> folds\n");
+        fprintf(stderr, "-b <num>\tSet max buckets for continuous values, 0 means don't use buckets. 0 by default\n");
+        fprintf(stderr, "-d <num>\tSet max depth, 999 by default\n");
+        fprintf(stderr, "-S\tShuffle dataset, off by default\n");
         return 0;
     }
     int seed = 69;
@@ -1040,16 +1011,18 @@ int main(int argc, char **argv) {
     bool IGR = false;
     bool C45 = false;
     bool shuffle = false;
+    bool cv = false;
     std::string filestem; // ew std::string
     float train_to_test_ratio = 0.7f;
     int max_buckets = 0;
     int max_depth = 999;
+    int numTimes = -1, numFolds = -1;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "-s") == 0) {
             if (++i < argc) {
                 seed = std::atoi(argv[i]);
             } else {
-                fprintf(stderr, "-s requires a value");
+                fprintf(stderr, "-s requires a value\n");
                 return 1;
             }
         } else if (strcmp(argv[i], "-HD") == 0) {
@@ -1060,34 +1033,48 @@ int main(int argc, char **argv) {
             if (++i < argc) {
                 filestem = argv[i];
             } else {
-                fprintf(stderr, "-f requires a value");
+                fprintf(stderr, "-f requires a value\n");
                 return 1;
             }
         } else if (strcmp(argv[i], "-T") == 0) {
             if (++i < argc) {
                 train_to_test_ratio = std::atof(argv[i]);
             } else {
-                fprintf(stderr, "-T requires a value");
+                fprintf(stderr, "-T requires a value\n");
                 return 1;
             }
         } else if (strcmp(argv[i], "-b") == 0) {
             if (++i < argc) {
                 max_buckets = std::atoi(argv[i]);
             } else {
-                fprintf(stderr, "-b requires a value");
+                fprintf(stderr, "-b requires a value\n");
                 return 1;
             }
         } else if (strcmp(argv[i], "-d") == 0) {
             if (++i < argc) {
                 max_depth = std::atoi(argv[i]);
             } else {
-                fprintf(stderr, "-d requires a value");
+                fprintf(stderr, "-d requires a value\n");
                 return 1;
             }
         } else if (strcmp(argv[i], "-C45") == 0) {
             C45 = true;
         } else if (strcmp(argv[i], "-IGR") == 0) {
             IGR = true;
+        } else if (strcmp(argv[i], "-c") == 0) {
+            cv = true;
+            if (++i < argc) {
+                numTimes = std::atoi(argv[i]);
+            } else {
+                fprintf(stderr, "-c two values\n");
+                return 1;
+            }
+            if (++i < argc) {
+                numFolds = std::atoi(argv[i]);
+            } else {
+                fprintf(stderr, "-c two values\n");
+                return 1;
+            }
         } else {
             fprintf(stderr, "Unrecognized commandline argument: %s\n", argv[i]);
             return 1;
@@ -1099,6 +1086,7 @@ int main(int argc, char **argv) {
     Rows data;
     getData(filestem, data);
 
+    // TODO: implement CV
     Rows training_data, testing_data;
     if (shuffle) std::random_shuffle(data.begin(), data.end());
     int trainCount = data.size()*train_to_test_ratio;
@@ -1106,14 +1094,12 @@ int main(int argc, char **argv) {
     testing_data.resize(data.size()-trainCount);
     std::copy_n(data.begin(), trainCount, training_data.begin());
     std::copy_n(data.rbegin(), data.size()-trainCount, testing_data.begin());
-    
-    //auto nn = nez(training_data);
 
     Node *tree;
     if (hellinger) {
         if (C45) {
             fprintf(stderr, "Building C4.5 (HD) tree...\n");
-            tree = build_C45_tree<find_best_split_hellinger_C45>(training_data, max_depth, max_buckets);
+            tree = build_C45_tree<find_best_split_C45_hellinger>(training_data, max_depth, max_buckets);
         } else {
             fprintf(stderr, "Building CART (HD) tree...\n");
             tree = build_CART_tree<find_best_split_hellinger>(training_data, max_depth, max_buckets);
@@ -1136,24 +1122,14 @@ int main(int argc, char **argv) {
     }
     printf("\n");
     //print_tree(tree);
-    float sum = 0;
     std::vector<int> TP(classes.size()), TN(classes.size()), FP(classes.size()), FN(classes.size());
     std::vector<std::vector<float>> probs;
     for (const auto &row: testing_data) {
         int actual = row.back().i;
-        const auto hist = classify(row, tree, C45);
-        float total = Utils::accumulate(hist);
-        probs.emplace_back();
-        for (int e: hist) {
-            // LAPLACE
-            probs.back().push_back(1.*(e+1)/(total + classes.size()));
-            //printf("%f ", probs.back().back());
-        }
-        probs.back().push_back(row.back().i);
-        //printf("%f\n", probs.back().back());
+        probs.emplace_back(classify(row, tree, C45));
         //printf("Actual: %s. Predicted: ", classes[row.back().i].c_str()); print_leaf(hist, total);
-        int prediction = std::max_element(hist.begin(), hist.end())-hist.begin();
-        sum += hist[actual]/total;
+        int prediction = std::max_element(probs.back().begin(), probs.back().end())-probs.back().begin();
+        probs.back().push_back(row.back().i);
         for (int cl = 0; cl < (int)classes.size(); ++cl) {
             if (prediction == actual) {
                 if (prediction == cl) ++TP[cl];
