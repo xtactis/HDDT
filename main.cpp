@@ -29,7 +29,6 @@
 */
 
 // TODO: sve osim stats u log file or sth | ultra ez
-// TODO: dodaj cross validation | medium
 // TODO: handle missing data | medium-zajebano
 // TODO: implementiraj multi-class hellinger distance za CART algoritam 
 // TODO: dodaj grid search za hiperparametre | medium
@@ -963,7 +962,7 @@ std::vector<float> class_weights(const std::vector<std::vector<float>> &probs) {
     return weights;
 }
 
-void calcStats(const std::vector<int> &TP, const std::vector<int> &TN, 
+std::vector<float> calcStats(const std::vector<int> &TP, const std::vector<int> &TN, 
                const std::vector<int> &FP, const std::vector<int> &FN,
                const std::vector<std::vector<float>> &probs) {
     std::vector<float (*)(int, int, int, int)> measures = {
@@ -971,7 +970,7 @@ void calcStats(const std::vector<int> &TP, const std::vector<int> &TN,
     };
     fprintf(stderr, "\t\tACC\t\tBA\t\tF-1\t\tMCC\t\tAUC\n");
     const auto weights = class_weights(probs);
-    float avgs[5] = {};
+    std::vector<float> avgs(5);
     for (int cl = 0; cl < (int)classes.size(); ++cl) {
         fprintf(stderr, "%8s:\t", classes[cl].c_str());
         for (int m = 0; m < (int)measures.size(); ++m) {
@@ -985,9 +984,63 @@ void calcStats(const std::vector<int> &TP, const std::vector<int> &TN,
     }
     fprintf(stderr, " Average:\t");
     for (int m = 0; m < (int)measures.size(); ++m) {
-        fprintf(stderr, "%8.6f\t", avgs[m]/classes.size());
+        avgs[m] /= classes.size();
+        fprintf(stderr, "%8.6f\t", avgs[m]);
     }
     fprintf(stderr, "%8.6f\n", avgs[measures.size()]);
+    return avgs;
+}
+
+Node *train(Rows &data, int max_depth, int max_buckets, bool C45, bool hellinger, bool IGR) {
+    Node *tree;
+    if (hellinger) {
+        if (C45) {
+            fprintf(stderr, "Building C4.5 (HD) tree...\n");
+            tree = build_C45_tree<find_best_split_C45_hellinger>(data, max_depth, max_buckets);
+        } else {
+            fprintf(stderr, "Building CART (HD) tree...\n");
+            tree = build_CART_tree<find_best_split_hellinger>(data, max_depth, max_buckets);
+        }
+        //tree = build_hellinger_tree(data, max_depth, max_buckets);
+    } else {
+        if (C45) {
+            if (IGR) {
+                fprintf(stderr, "Building C4.5 (IGR) decision tree...\n");
+                tree = build_C45_tree<find_best_split_C45_IGR>(data, max_depth, max_buckets);
+            } else {
+                fprintf(stderr, "Building C4.5 (IG) decision tree...\n");
+                tree = build_C45_tree<find_best_split_C45_IG>(data, max_depth, max_buckets);
+            }
+        } else {
+            fprintf(stderr, "Building CART (Gini) decision tree...\n");
+            tree = build_CART_tree<find_best_split_indian>(data, max_depth, max_buckets);
+            //tree = build_decision_tree(data, max_depth, max_buckets);
+        }
+    }
+    return tree;
+}
+
+std::vector<float> test(const Rows &data, Node *tree, bool C45) {
+    //print_tree(tree);
+    std::vector<int> TP(classes.size()), TN(classes.size()), FP(classes.size()), FN(classes.size());
+    std::vector<std::vector<float>> probs;
+    for (const auto &row: data) {
+        int actual = row.back().i;
+        probs.emplace_back(classify(row, tree, C45));
+        //printf("Actual: %s. Predicted: ", classes[row.back().i].c_str()); print_leaf(hist, total);
+        int prediction = std::max_element(probs.back().begin(), probs.back().end())-probs.back().begin();
+        probs.back().push_back(row.back().i);
+        for (int cl = 0; cl < (int)classes.size(); ++cl) {
+            if (prediction == actual) {
+                if (prediction == cl) ++TP[cl];
+                else ++TN[cl];
+            } else {
+                if (prediction == cl) ++FP[cl];
+                else ++FN[cl];
+            }
+        }
+    }
+    return calcStats(TP, TN, FP, FN, probs);
 }
 
 int main(int argc, char **argv) {
@@ -1086,61 +1139,51 @@ int main(int argc, char **argv) {
     Rows data;
     getData(filestem, data);
 
-    // TODO: implement CV
-    Rows training_data, testing_data;
-    if (shuffle) std::random_shuffle(data.begin(), data.end());
-    int trainCount = data.size()*train_to_test_ratio;
-    training_data.resize(trainCount);
-    testing_data.resize(data.size()-trainCount);
-    std::copy_n(data.begin(), trainCount, training_data.begin());
-    std::copy_n(data.rbegin(), data.size()-trainCount, testing_data.begin());
+    if (cv) {
+        std::vector<float> avg(5);
+        for (int run = 0; run < numTimes; ++run) {
+            std::random_shuffle(data.begin(), data.end());
+            int passed = 0;
+            for (int fold = 0; fold < numFolds; ++fold) {
+                printf("Run: %d; Fold: %d\n", run, fold);
+                int size = data.size()/numFolds;
+                if (fold == numFolds-1) size += data.size()%numFolds;
+                Rows training_data(data.size()-size), testing_data(size);
+                for (int i = 0, tr = 0, te = 0; i < (int)data.size(); ++i) {
+                    if (i < passed) {
+                        training_data[tr++] = data[i];
+                    } else if (i < passed+size) {
+                        testing_data[te++] = data[i];
+                    } else {
+                        training_data[tr++] = data[i];
+                    }
+                }
+                passed += size;
 
-    Node *tree;
-    if (hellinger) {
-        if (C45) {
-            fprintf(stderr, "Building C4.5 (HD) tree...\n");
-            tree = build_C45_tree<find_best_split_C45_hellinger>(training_data, max_depth, max_buckets);
-        } else {
-            fprintf(stderr, "Building CART (HD) tree...\n");
-            tree = build_CART_tree<find_best_split_hellinger>(training_data, max_depth, max_buckets);
-        }
-        //tree = build_hellinger_tree(training_data, max_depth, max_buckets);
-    } else {
-        if (C45) {
-            if (IGR) {
-                fprintf(stderr, "Building C4.5 (IGR) decision tree...\n");
-                tree = build_C45_tree<find_best_split_C45_IGR>(training_data, max_depth, max_buckets);
-            } else {
-                fprintf(stderr, "Building C4.5 (IG) decision tree...\n");
-                tree = build_C45_tree<find_best_split_C45_IG>(training_data, max_depth, max_buckets);
+                Node *tree = train(training_data, max_depth, max_buckets, C45, hellinger, IGR);
+
+                const auto avgs = test(testing_data, tree, C45);
+                for (int k = 0; k < (int)avgs.size(); ++k) {
+                    avg[k] += avgs[k];
+                }
             }
-        } else {
-            fprintf(stderr, "Building CART (Gini) decision tree...\n");
-            tree = build_CART_tree<find_best_split_indian>(training_data, max_depth, max_buckets);
-            //tree = build_decision_tree(training_data, max_depth, max_buckets);
         }
+        fprintf(stderr, "\nTot.AVG:\t");
+        for (float e: avg) {
+            fprintf(stderr, "%8.6f\t", e/(numFolds*numTimes));
+        }
+    } else {
+        if (shuffle) std::random_shuffle(data.begin(), data.end());
+        int trainCount = data.size()*train_to_test_ratio;
+        Rows training_data(trainCount), testing_data(data.size()-trainCount);
+        std::copy_n(data.begin(), trainCount, training_data.begin());
+        std::copy_n(data.rbegin(), data.size()-trainCount, testing_data.begin());
+
+        Node *tree = train(training_data, max_depth, max_buckets, C45, hellinger, IGR);
+
+        const auto avgs = test(testing_data, tree, C45);
     }
     printf("\n");
-    //print_tree(tree);
-    std::vector<int> TP(classes.size()), TN(classes.size()), FP(classes.size()), FN(classes.size());
-    std::vector<std::vector<float>> probs;
-    for (const auto &row: testing_data) {
-        int actual = row.back().i;
-        probs.emplace_back(classify(row, tree, C45));
-        //printf("Actual: %s. Predicted: ", classes[row.back().i].c_str()); print_leaf(hist, total);
-        int prediction = std::max_element(probs.back().begin(), probs.back().end())-probs.back().begin();
-        probs.back().push_back(row.back().i);
-        for (int cl = 0; cl < (int)classes.size(); ++cl) {
-            if (prediction == actual) {
-                if (prediction == cl) ++TP[cl];
-                else ++TN[cl];
-            } else {
-                if (prediction == cl) ++FP[cl];
-                else ++FN[cl];
-            }
-        }
-    }
-    calcStats(TP, TN, FP, FN, probs);
     END_SESSION();
     return 0;
 }
