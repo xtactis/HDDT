@@ -4,6 +4,8 @@
 #include <string>
 #include <set>
 
+#include <thread>
+
 #include <cstdio>
 #include <cmath>
 #include <cstring>
@@ -968,26 +970,26 @@ std::vector<float> calcStats(const std::vector<int> &TP, const std::vector<int> 
     std::vector<float (*)(int, int, int, int)> measures = {
         accuracy, BA, fMeasure, MCC
     };
-    fprintf(stderr, "\t\tACC\t\tBA\t\tF-1\t\tMCC\t\tAUC\n");
+    //fprintf(stderr, "\t\tACC\t\tBA\t\tF-1\t\tMCC\t\tAUC\n");
     const auto weights = class_weights(probs);
     std::vector<float> avgs(5);
     for (int cl = 0; cl < (int)classes.size(); ++cl) {
-        fprintf(stderr, "%8s:\t", classes[cl].c_str());
+        //fprintf(stderr, "%8s:\t", classes[cl].c_str());
         for (int m = 0; m < (int)measures.size(); ++m) {
             float cur = measures[m](TP[cl], TN[cl], FP[cl], FN[cl]);
-            fprintf(stderr, "%8.6f\t", cur);
+            //fprintf(stderr, "%8.6f\t", cur);
             avgs[m] += cur;
         }
         float cur = AUC(cl, probs);
         avgs[measures.size()] += cur*weights[cl];
-        fprintf(stderr, "%8.6f\n", cur);
+        //fprintf(stderr, "%8.6f\n", cur);
     }
-    fprintf(stderr, " Average:\t");
+    //fprintf(stderr, " Average:\t");
     for (int m = 0; m < (int)measures.size(); ++m) {
         avgs[m] /= classes.size();
-        fprintf(stderr, "%8.6f\t", avgs[m]);
+        //fprintf(stderr, "%8.6f\t", avgs[m]);
     }
-    fprintf(stderr, "%8.6f\n", avgs[measures.size()]);
+    //fprintf(stderr, "%8.6f\n", avgs[measures.size()]);
     return avgs;
 }
 
@@ -1043,20 +1045,29 @@ std::vector<float> test(const Rows &data, Node *tree, bool C45) {
     return calcStats(TP, TN, FP, FN, probs);
 }
 
+std::vector<std::vector<float>> avgs;
+
+void cv_thread_runner(Rows training_data, Rows testing_data, int max_depth, int max_buckets, bool C45, bool hellinger, bool IGR, int fold) {
+    Node *tree = train(training_data, max_depth, max_buckets, C45, hellinger, IGR);
+
+    avgs[fold] = test(testing_data, tree, C45);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2 || strcmp(argv[1], "-h") == 0) {
-        fprintf(stderr, "-h\tTo display this help message\n");
+        fprintf(stderr, "-h\t\tTo display this help message\n");
         fprintf(stderr, "-s <num>\tTo set the seed, 69 by default\n");
-        fprintf(stderr, "-C45\tUse the C4.5 algorithm for building the decision tree. Will use CART if not specified\n");
-        fprintf(stderr, "-IGR\tIf not using HD, use Information Gain Ratio instead of Information Gain.\n");
-        fprintf(stderr, "-HD\tUse Hellinger distance\n");
+        fprintf(stderr, "-C45\t\tUse the C4.5 algorithm for building the decision tree. Will use CART if not specified\n");
+        fprintf(stderr, "-IGR\t\tIf not using HD, use Information Gain Ratio instead of Information Gain.\n");
+        fprintf(stderr, "-HD\t\tUse Hellinger distance\n");
         fprintf(stderr, "-f <filestem>\tSet filestem, expects <filestem>.data and <filestem>.names\n");
         // fprintf(stderr, "-t\tUse separate test file, expected <filestem>.test\n"); later
         fprintf(stderr, "-T <num>\tSet train to test ratio if no separate test file, 0.7 by default\n");
         fprintf(stderr, "-c <num1> <num2>\tCrosstrain <num1> times on <num2> folds\n");
         fprintf(stderr, "-b <num>\tSet max buckets for continuous values, 0 means don't use buckets. 0 by default\n");
         fprintf(stderr, "-d <num>\tSet max depth, 999 by default\n");
-        fprintf(stderr, "-S\tShuffle dataset, off by default\n");
+        fprintf(stderr, "-S\t\tShuffle dataset, off by default\n");
+        fprintf(stderr, "-mt\t\tWhen doing crossvalidation, use one thread per fold\n");
         return 0;
     }
     int seed = 69;
@@ -1065,6 +1076,7 @@ int main(int argc, char **argv) {
     bool C45 = false;
     bool shuffle = false;
     bool cv = false;
+    bool multithread = false;
     std::string filestem; // ew std::string
     float train_to_test_ratio = 0.7f;
     int max_buckets = 0;
@@ -1114,6 +1126,8 @@ int main(int argc, char **argv) {
             C45 = true;
         } else if (strcmp(argv[i], "-IGR") == 0) {
             IGR = true;
+        } else if (strcmp(argv[i], "-mt") == 0) {
+            multithread = true;
         } else if (strcmp(argv[i], "-c") == 0) {
             cv = true;
             if (++i < argc) {
@@ -1141,11 +1155,15 @@ int main(int argc, char **argv) {
 
     if (cv) {
         std::vector<float> avg(5);
+        avgs.resize(numFolds);
         for (int run = 0; run < numTimes; ++run) {
             std::random_shuffle(data.begin(), data.end());
             int passed = 0;
+            std::vector<std::thread> ts(numFolds);
+            avgs.clear();
+            avgs.resize(numFolds);
             for (int fold = 0; fold < numFolds; ++fold) {
-                printf("Run: %d; Fold: %d\n", run, fold);
+                //printf("Run: %d; Fold: %d\n", run, fold);
                 int size = data.size()/numFolds;
                 if (fold == numFolds-1) size += data.size()%numFolds;
                 Rows training_data(data.size()-size), testing_data(size);
@@ -1159,12 +1177,16 @@ int main(int argc, char **argv) {
                     }
                 }
                 passed += size;
-
-                Node *tree = train(training_data, max_depth, max_buckets, C45, hellinger, IGR);
-
-                const auto avgs = test(testing_data, tree, C45);
-                for (int k = 0; k < (int)avgs.size(); ++k) {
-                    avg[k] += avgs[k];
+                if (multithread) {
+                    ts[fold] = std::thread(cv_thread_runner, training_data, testing_data, max_depth, max_buckets, C45, hellinger, IGR, fold);
+                } else {
+                    cv_thread_runner(training_data, testing_data, max_depth, max_buckets, C45, hellinger, IGR, fold);
+                }
+            }
+            for (int fold = 0; fold < numFolds; ++fold) {
+                if (multithread) ts[fold].join();
+                for (int k = 0; k < (int)avgs[fold].size(); ++k) {
+                    avg[k] += avgs[fold][k];
                 }
             }
         }
