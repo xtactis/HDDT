@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+#include <cfloat>
 /* 
 *** STO NEVALJA ***
 
@@ -28,17 +29,20 @@
 
 */
 
-// TODO: sve osim stats u log file or sth | ultra ez
-// TODO: handle missing data | medium-zajebano
-// TODO: implementiraj multi-class hellinger distance za CART algoritam 
-// TODO: dodaj grid search za hiperparametre | medium
-// TODO: dodaj mogucnost spremanja stvorenog stabla | kinda ez-medium
-// TODO: fixati apsolutno sve da nije ovako fugly | zajebano
+// TODO: handle missing data | medium-zajebano | high priority
+// TODO: potvrdi da C45 HD ima smisla u diskretnim slucajevima | high
+// TODO: implementiraj multi-class hellinger distance za CART algoritam | high
+// TODO: dodaj grid search za hiperparametre | medium | low
+// TODO: sve osim stats u log file or sth | ultra ez | low
+// TODO: dodaj mogucnost spremanja stvorenog stabla | kinda ez-medium | low
+// TODO: fixati apsolutno sve da nije ovako fugly | zajebano | medium
 
 // lol
-// TODO: multi-core | samo kinda zajebano
-// TODO: gpu????? | poprilicno zajebano
-// TODO: hellinger net????? lol | ultra zajebano delaj u pajtonima
+// TODO: multi-core | samo kinda zajebano | low
+// TODO: gpu????? | poprilicno zajebano | ultra low
+// TODO: hellinger net????? lol | ultra zajebano delaj u pajtonima | hopefully nonexistent
+
+// fpga support when
 
 #define DEBUG(text) fprintf(stderr, "%d: %s\n", __LINE__, text);
 
@@ -56,15 +60,74 @@
 #define PROFILE_FUNCTION
 #endif
 
-union Z {
-    int i;
-    float f;
-    Z() {}
-    Z(int x): i(x) {}
-    Z(float x): f(x) {}
+struct Row {
+    std::vector<float> data;
+    float weight;
+
+    Row(const std::vector<float> &_d={}, float _w=1.0f) : data(_d), weight(_w) {}
+    Row(long long int s) : data(s), weight(1.0f) {}
+
+    void push_back(float x) {
+        data.push_back(x);
+    }
+
+    float &back() {
+        return data.back();
+    }
+
+    float back() const {
+        return data.back();
+    }
+
+    float &operator[](int i) {
+        return data[i];
+    }
+
+    float operator[](int i) const {
+        return data[i];
+    }
+
+    std::vector<float>::size_type size() const {
+        return data.size();
+    }
+
+    std::vector<float>::iterator begin() {
+        return data.begin();
+    }
+
+    std::vector<float>::reverse_iterator rbegin() {
+        return data.rbegin();
+    }
+
+    std::vector<float>::const_iterator cbegin() const {
+        return data.cbegin();
+    }
+
+    std::vector<float>::const_reverse_iterator crbegin() {
+        return data.crbegin();
+    }
+
+    std::vector<float>::iterator end() {
+        return data.end();
+    }
+
+    std::vector<float>::reverse_iterator rend() {
+        return data.rend();
+    }
+
+    std::vector<float>::const_iterator cend() const {
+        return data.cend();
+    }
+
+    std::vector<float>::const_reverse_iterator crend() {
+        return data.crend();
+    }
 };
 
-using Row = std::vector<Z>;
+//using Row = std::pair<std::vector<float>, float>;
+
+//using Row = std::vector<float>;
+//using Row = RowT<float>;
 using Rows = std::vector<Row>;
 
 int minorityClass; // TODO: get rid of these globals, legitimately just send them to everything that uses them
@@ -86,7 +149,7 @@ namespace Utils {
         // filter only for rows with label == `label`
         Rows new_rows;
         for (const auto &row: rows) {
-            if (row.back().i == label) {
+            if ((int)row.back() == label) {
                 new_rows.push_back(row);
             }
         }
@@ -97,7 +160,7 @@ namespace Utils {
         // count only for rows with label == `label`
         int ret = 0;
         for (const auto &row: rows) {
-            if (row.back().i == label) {
+            if ((int)row.back() == label) {
                 ++ret;
             }
         }
@@ -136,18 +199,18 @@ namespace Utils {
 
 struct Question {
     int column;
-    Z value; // TODO type pending // *mozda* nas nije briga
+    float value;
 
     int match(const Row &example, bool c45 = false) const { // a0: 5, a1: "burek", a2: 6
         // Compare the feature value in an example to the
         // feature value in this question.
         if (isContinuous[column]) {
-            return example[column].f >= value.f;
+            return example[column] > value || Utils::eq(example[column], value);
         }
         if (c45) { // returns the index of the value in attrValues[column]
-            return example[column].i;
+            return (int)example[column];
         }
-        return example[column].i == (int)value.i;
+        return (int)example[column] == (int)value;
     }
 };
 
@@ -157,7 +220,7 @@ std::vector<int> class_histogram(const Rows &rows) {
     */
     std::vector<int> histogram(classes.size(), 0);
     for (const auto &row: rows) {
-        int label = row.back().i;
+        int label = row.back();
         ++histogram[label];
     }
     return histogram;
@@ -280,10 +343,7 @@ std::set<float> feature_values(int col, const Rows &rows) {
     // *mozda* nas to nije briga?
     std::set<float> values;
     for (const auto &row: rows) {
-        if (isContinuous[col])
-            values.insert(row[col].f);
-        else
-            values.insert(row[col].i);
+        values.insert(row[col]);
     }
     return values;
 }
@@ -292,7 +352,7 @@ std::set<float> feature_values(int col, const Rows &rows) {
 
 void partition_class_histogram(const Rows &rows, const Question &question, bool c45, std::vector<std::vector<int>> &splits) {
     for (const auto &row: rows) {
-        ++splits[question.match(row, c45)][row.back().i]; // "false" should depend on c45
+        ++splits[question.match(row, c45)][(int)row.back()]; // "false" should depend on c45
         ++splits[question.match(row, c45)].back();
     }
 }
@@ -371,7 +431,7 @@ void split_discrete(const Rows &rows, int column, float current_uncertainty,
     int size = attrValues[column].size();
     std::vector<std::vector<int>> splits(size, std::vector<int>(classes.size()+1, 0)); // +1 za broj redova u tom splitu
     for (int value = 0; value < (int)attrValues[column].size(); ++value) {
-        Question question = {column, value};
+        Question question = {column, (float)value};
         Rows true_rows, false_rows;
         //if (true_rows.size() == 0 || false_rows.size() == 0) {
         //    continue;
@@ -433,10 +493,10 @@ void hellinger_split_continuous(const Rows &rows, int column, int tp,
         for (const auto &row: rows) {
             if (question.match(row, c45)) {
                 ++lsize;
-                if (row.back().i == minorityClass) ++tfvp;
+                if ((int)row.back() == minorityClass) ++tfvp;
             } else {
                 ++rsize;
-                if (row.back().i == minorityClass) ++tfwp;
+                if ((int)row.back() == minorityClass) ++tfwp;
             }
         }
         if (lsize == 0 || rsize == 0) {
@@ -459,16 +519,16 @@ void hellinger_split_discrete(const Rows &rows, int column, int tp,
         attrClassCnts[row[column].i][row.back().i] += 1.0f; // should be weight
     }*/
     for (int value = 0; value < (int)attrValues[column].size(); ++value) {
-        Question question = {column, value};
+        Question question = {column, (float)value};
         int lsize = 0, rsize = 0;
         int tfvp = 0, tfwp = 0;
         for (const auto &row: rows) {
             if (question.match(row, c45)) {
                 ++lsize;
-                if (row.back().i == minorityClass) ++tfvp;
+                if ((int)row.back() == minorityClass) ++tfvp;
             } else {
                 ++rsize;
-                if (row.back().i == minorityClass) ++tfwp;
+                if ((int)row.back() == minorityClass) ++tfwp;
             }
         }
         if (lsize == 0 || rsize == 0) {
@@ -485,11 +545,11 @@ void hellinger_split_discrete(const Rows &rows, int column, int tp,
 void new_hellinger_split_continuous(Rows &rows, int column,
                                 float &best_gain, Question &best_question) {
     std::sort(rows.begin(), rows.end(), [column](const Row &a, const Row &b){
-        return a[column].f < b[column].f;
+        return a[column] < b[column];
     });
     std::vector<float> leftFreq(classes.size()), rightFreq(classes.size());
     for (const auto &row: rows) {
-        rightFreq[row.back().i] += 1.0f; // should be the weight of the row
+        rightFreq[(int)row.back()] += row.weight; // should be the weight of the row
     }
     // for now we just treat the last row as a whole row
     // but once we start handling missing data and weighting rows
@@ -499,17 +559,17 @@ void new_hellinger_split_continuous(Rows &rows, int column,
     int rsize = rows.size(), lsize = 0;
     for (int i = 1; i < (int)rows.size()-1; ++i) {
         const auto &row = rows[i];
-        float value = rows[i-1][column].f;
-        rightFreq[row.back().i] -= 1.0f; // should be the weight of the row
-        if (Utils::eq(rightFreq[row.back().i], 0)) {
-            rightFreq[row.back().i] = 0.0f;
+        float value = rows[i-1][column];
+        rightFreq[(int)row.back()] -= 1.0f; // should be the weight of the row
+        if (Utils::eq(rightFreq[(int)row.back()], 0)) {
+            rightFreq[(int)row.back()] = 0.0f;
         }
         --rsize;
-        leftFreq[rows[i-1].back().i] += 1.0f; // should be the weight of the row
+        leftFreq[(int)rows[i-1].back()] += 1.0f; // should be the weight of the row
         ++lsize;
         if (lsize == 0) continue;
         if (rsize == 0) break;
-        if (Utils::eq(row[column].f, value)) continue;
+        if (Utils::eq(row[column], value)) continue;
         float dblsum = 0;
         int nPairs = 0;
         for (int c1 = 0; c1 < (int)classes.size()-1; ++c1) {
@@ -537,7 +597,7 @@ void new_hellinger_split_discrete(const Rows &rows, int column,
                                   float &best_gain, Question &best_question) {
     std::vector<std::vector<float>> attrClassCnts(attrValues[column].size(), std::vector<float>(classes.size()));
     for (const auto &row: rows) {
-        attrClassCnts[row[column].i][row.back().i] += 1.0f; // should be weight
+        attrClassCnts[(int)row[column]][(int)row.back()] += 1.0f; // should be weight
     }
     int legitChildren = 0;
     for (int i = 0; i < (int)attrValues[column].size(); ++i) {
@@ -634,7 +694,7 @@ void IG_split_discrete(const Rows &rows, int column, float beforeEntropy,
     int size = attrValues[column].size();
     std::vector<std::vector<int>> splits(size, std::vector<int>(classes.size()+1, 0)); // +1 za broj redova u tom splitu
     for (int value = 0; value < (int)attrValues[column].size(); ++value) {
-        Question question = {column, value}; // value is unused
+        Question question = {column, 0.0f}; // value is unused
         /*
         std::vector<Rows> splits;
         partition(rows, question, c45, splits);
@@ -758,9 +818,9 @@ void print_tree(Node *node, const std::string &spacing="") {
     printf("%s", spacing.c_str());
     printf("Is %s ", attrNames[node->question.column].c_str());
     if (isContinuous[node->question.column]) {
-        printf(">= %.3f?\n", node->question.value.f);
+        printf(">= %.3f?\n", node->question.value);
     } else {
-        printf("== %s?\n", attrValues[node->question.column][(int)node->question.value.i].c_str());
+        printf("== %s?\n", attrValues[node->question.column][(int)node->question.value].c_str());
     }
 
     for (int child = 0; child < (int)node->children.size(); ++child) {
@@ -861,17 +921,18 @@ void getData(const std::string &filestub, Rows &data) {
         data.emplace_back(values.size());
         for (int i = 0; i < (int)values.size()-1; ++i) {
             if (values[i] == "?") {
+                //values[i] = FLT_MAX;
                 data.pop_back();
                 break;
             }
             if (isContinuous[i]) {
-                data.back()[i].f = std::atof(values[i].c_str());
+                data.back()[i] = std::atof(values[i].c_str());
                 if (std::isnan(mins[i])) {
-                    mins[i] = data.back()[i].f;
-                    maxs[i] = data.back()[i].f;
+                    mins[i] = data.back()[i];
+                    maxs[i] = data.back()[i];
                 }
-                mins[i] = std::min(mins[i], data.back()[i].f);
-                maxs[i] = std::max(maxs[i], data.back()[i].f);
+                mins[i] = std::min(mins[i], data.back()[i]);
+                maxs[i] = std::max(maxs[i], data.back()[i]);
             } else {
                 auto x = std::find(attrValues[i].begin(),
                                    attrValues[i].end(),
@@ -884,7 +945,7 @@ void getData(const std::string &filestub, Rows &data) {
                     fprintf(stderr, "\nCheck line %d\nThat don't exist bro.\n", lineno);
                     exit(1);
                 }
-                data.back()[i].i = x-attrValues[i].begin();
+                data.back()[i] = x-attrValues[i].begin();
             }
         }
         auto x = std::find(classes.begin(),
@@ -894,7 +955,7 @@ void getData(const std::string &filestub, Rows &data) {
             fprintf(stderr, "That class don't exist bro.");
             exit(1);
         }
-        data.back().back().i = x-classes.begin();
+        data.back().back() = x-classes.begin();
     }
     fin.close();
 
@@ -1021,15 +1082,15 @@ Node *train(Rows &data, int max_depth, int max_buckets, bool C45, bool hellinger
 }
 
 std::vector<float> test(const Rows &data, Node *tree, bool C45) {
-    //print_tree(tree);
+    print_tree(tree);
     std::vector<int> TP(classes.size()), TN(classes.size()), FP(classes.size()), FN(classes.size());
     std::vector<std::vector<float>> probs;
     for (const auto &row: data) {
-        int actual = row.back().i;
+        int actual = row.back();
         probs.emplace_back(classify(row, tree, C45));
         //printf("Actual: %s. Predicted: ", classes[row.back().i].c_str()); print_leaf(hist, total);
         int prediction = std::max_element(probs.back().begin(), probs.back().end())-probs.back().begin();
-        probs.back().push_back(row.back().i);
+        probs.back().push_back((int)row.back());
         for (int cl = 0; cl < (int)classes.size(); ++cl) {
             if (prediction == actual) {
                 if (prediction == cl) ++TP[cl];
