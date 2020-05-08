@@ -984,12 +984,12 @@ std::vector<float> calcStats(const std::vector<int> &TP, const std::vector<int> 
         avgs[measures.size()] += cur*weights[cl];
         //fprintf(stderr, "%8.6f\n", cur);
     }
-    //fprintf(stderr, " Average:\t");
+    fprintf(stderr, " Average:\t");
     for (int m = 0; m < (int)measures.size(); ++m) {
         avgs[m] /= classes.size();
-        //fprintf(stderr, "%8.6f\t", avgs[m]);
+        fprintf(stderr, "%8.6f\t", avgs[m]);
     }
-    //fprintf(stderr, "%8.6f\n", avgs[measures.size()]);
+    fprintf(stderr, "%8.6f\n", avgs[measures.size()]);
     return avgs;
 }
 
@@ -1045,12 +1045,20 @@ std::vector<float> test(const Rows &data, Node *tree, bool C45) {
     return calcStats(TP, TN, FP, FN, probs);
 }
 
-std::vector<std::vector<float>> avgs;
-
-void cv_thread_runner(Rows training_data, Rows testing_data, int max_depth, int max_buckets, bool C45, bool hellinger, bool IGR, int fold) {
+void cv_thread_runner(const Rows &data, int size, int passed, int max_depth, int max_buckets, bool C45, bool hellinger, bool IGR, std::vector<float> &avgs) {
+    Rows training_data(data.size()-size), testing_data(size);
+    for (int i = 0, tr = 0, te = 0; i < (int)data.size(); ++i) {
+        if (i < passed) {
+            training_data[tr++] = data[i];
+        } else if (i < passed+size) {
+            testing_data[te++] = data[i];
+        } else {
+            training_data[tr++] = data[i];
+        }
+    }
     Node *tree = train(training_data, max_depth, max_buckets, C45, hellinger, IGR);
 
-    avgs[fold] = test(testing_data, tree, C45);
+    avgs = test(testing_data, tree, C45);
 }
 
 int main(int argc, char **argv) {
@@ -1155,33 +1163,22 @@ int main(int argc, char **argv) {
 
     if (cv) {
         std::vector<float> avg(5);
+        std::vector<std::vector<float>> avgs;
         avgs.resize(numFolds);
         for (int run = 0; run < numTimes; ++run) {
             std::random_shuffle(data.begin(), data.end());
             int passed = 0;
             std::vector<std::thread> ts(numFolds);
-            avgs.clear();
-            avgs.resize(numFolds);
             for (int fold = 0; fold < numFolds; ++fold) {
-                //printf("Run: %d; Fold: %d\n", run, fold);
                 int size = data.size()/numFolds;
                 if (fold == numFolds-1) size += data.size()%numFolds;
-                Rows training_data(data.size()-size), testing_data(size);
-                for (int i = 0, tr = 0, te = 0; i < (int)data.size(); ++i) {
-                    if (i < passed) {
-                        training_data[tr++] = data[i];
-                    } else if (i < passed+size) {
-                        testing_data[te++] = data[i];
-                    } else {
-                        training_data[tr++] = data[i];
-                    }
+                //printf("Run: %d; Fold: %d %d %d\n", run, fold, data.size(), size);
+                if (multithread) {
+                    ts[fold] = std::thread(cv_thread_runner, std::cref(data), size, passed, max_depth, max_buckets, C45, hellinger, IGR, std::ref(avgs[fold]));
+                } else {
+                    cv_thread_runner(data, size, passed, max_depth, max_buckets, C45, hellinger, IGR, avgs[fold]);
                 }
                 passed += size;
-                if (multithread) {
-                    ts[fold] = std::thread(cv_thread_runner, training_data, testing_data, max_depth, max_buckets, C45, hellinger, IGR, fold);
-                } else {
-                    cv_thread_runner(training_data, testing_data, max_depth, max_buckets, C45, hellinger, IGR, fold);
-                }
             }
             for (int fold = 0; fold < numFolds; ++fold) {
                 if (multithread) ts[fold].join();
@@ -1197,13 +1194,8 @@ int main(int argc, char **argv) {
     } else {
         if (shuffle) std::random_shuffle(data.begin(), data.end());
         int trainCount = data.size()*train_to_test_ratio;
-        Rows training_data(trainCount), testing_data(data.size()-trainCount);
-        std::copy_n(data.begin(), trainCount, training_data.begin());
-        std::copy_n(data.rbegin(), data.size()-trainCount, testing_data.begin());
-
-        Node *tree = train(training_data, max_depth, max_buckets, C45, hellinger, IGR);
-
-        const auto avgs = test(testing_data, tree, C45);
+        std::vector<float> avgs;
+        cv_thread_runner(data, trainCount, 0, max_depth, max_buckets, C45, hellinger, IGR, avgs);
     }
     printf("\n");
     END_SESSION();
