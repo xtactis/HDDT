@@ -13,12 +13,12 @@
 /* 
 *** STO NEVALJA ***
 
-1. "weights" su nam krivo pretpostavljeni da trebaju biti 1
+1. .seconds" su nam krivo pretpostavljeni da trebaju biti 1
     - smanje se za rows koji kad splittamo na atributu s missing value
 2. hellingera krivo izracunavamo jer smo retardirani
     - za diskretne slucajeve je kompletno krivo (kinda emulira continuous)
     - za "continumous" radi samo za 2 klase
-    - NOTE: attrClassCnts[][] pribrojava sve weights u rows za trenutacni atribut gdje
+    - NOTE: attrClassCnts[][] pribrojava sve.seconds u rows za trenutacni atribut gdje
             prvi [] odgovara vrijednosti atributa, a drugi klasi na kraju rowa
 
 3. krucijalno, sve je presporo, a C4.5 je mozda najsporija stvar ikad napisana
@@ -64,87 +64,8 @@
 
 const float MISSING = FLT_MAX;
 
-struct Row {
-    std::vector<float> data;
-    float weight;
-
-    Row() {}
-    explicit Row(const std::vector<float> &_d, float _w=1.0f) : data(_d), weight(_w) {}
-    explicit Row(long long int s) : weight(1.0f) {
-        data = std::vector<float>(s);
-    }
-    Row(const Row &other) : data(other.data), weight(other.weight) {}
-    Row(Row &&other) : data(other.data), weight(other.weight) {}
-    Row &operator=(const Row &other) {
-        if (&other != this) {
-            data = other.data;
-            weight = other.weight;
-        }
-        return *this;
-    }
-    Row &operator=(Row &&other) {
-        if (&other != this) {
-            data = other.data;
-            weight = other.weight;
-        }
-        return *this;
-    }
-    void push_back(float x) {
-        data.push_back(x);
-    }
-
-    float &back() {
-        return data.back();
-    }
-
-    const float &back() const {
-        return data.back();
-    }
-
-    float &operator[](int i) {
-        return data[i];
-    }
-
-    float operator[](int i) const {
-        return data[i];
-    }
-
-    std::vector<float>::size_type size() const {
-        return data.size();
-    }
-
-    std::vector<float>::iterator begin() {
-        return data.begin();
-    }
-
-    std::vector<float>::reverse_iterator rbegin() {
-        return data.rbegin();
-    }
-
-    std::vector<float>::const_iterator cbegin() const {
-        return data.cbegin();
-    }
-
-    std::vector<float>::const_reverse_iterator crbegin() {
-        return data.crbegin();
-    }
-
-    std::vector<float>::iterator end() {
-        return data.end();
-    }
-
-    std::vector<float>::reverse_iterator rend() {
-        return data.rend();
-    }
-
-    std::vector<float>::const_iterator cend() const {
-        return data.cend();
-    }
-
-    std::vector<float>::const_reverse_iterator crend() {
-        return data.crend();
-    }
-};
+#include <utility>
+using Row = std::pair<std::vector<float>, float>;
 
 //using Row = std::pair<std::vector<float>, float>;
 
@@ -171,7 +92,7 @@ namespace Utils {
         // filter only for rows with label == `label`
         Rows new_rows;
         for (const auto &row: rows) {
-            if ((int)row.back() == label) {
+            if ((int)row.first.back() == label) {
                 new_rows.push_back(row);
             }
         }
@@ -182,7 +103,7 @@ namespace Utils {
         // count only for rows with label == `label`
         int ret = 0;
         for (const auto &row: rows) {
-            if ((int)row.back() == label) {
+            if ((int)row.first.back() == label) {
                 ++ret;
             }
         }
@@ -226,7 +147,7 @@ struct Question {
     int match(const Row &example, bool c45 = false) const { // a0: 5, a1: "burek", a2: 6
         // Compare the feature value in an example to the
         // feature value in this question.
-        if (example[column] == MISSING) {
+        if (example.first[column] == MISSING) {
             if (isContinuous[column]) {
                 return 2;
             } else {
@@ -234,12 +155,12 @@ struct Question {
             }
         }
         if (isContinuous[column]) {
-            return example[column] > value || Utils::eq(example[column], value);
+            return example.first[column] > value || Utils::eq(example.first[column], value);
         }
         if (c45) { // returns the index of the value in attrValues[column]
-            return (int)example[column];
+            return (int)example.first[column];
         }
-        return (int)example[column] == (int)value;
+        return (int)example.first[column] == (int)value;
     }
 };
 
@@ -249,8 +170,8 @@ std::vector<float> class_histogram(const Rows &rows) {
     */
     std::vector<float> histogram(classes.size(), 0);
     for (const auto &row: rows) {
-        int label = row.back();
-        histogram[label] += row.weight;
+        int label = row.first.back();
+        histogram[label] += row.second;
     }
     return histogram;
 }
@@ -376,7 +297,7 @@ std::set<float> feature_values(int col, const Rows &rows) {
     // *mozda* nas to nije briga?
     std::set<float> values;
     for (const auto &row: rows) {
-        values.insert(row[col]);
+        values.insert(row.first[col]);
     }
     return values;
 }
@@ -385,7 +306,7 @@ std::set<float> feature_values(int col, const Rows &rows) {
 
 void partition_class_histogram(const Rows &rows, const Question &question, bool c45, std::vector<std::vector<int>> &splits) {
     for (const auto &row: rows) {
-        ++splits[question.match(row, c45)][(int)row.back()]; // "false" should depend on c45
+        ++splits[question.match(row, c45)][(int)row.first.back()]; // "false" should depend on c45
         ++splits[question.match(row, c45)].back();
     }
 }
@@ -394,7 +315,7 @@ void partition_class_histogram(const Rows &rows, const Question &question, bool 
 Rows partition(const Rows &rows, const Question &question, bool c45, Rows &true_rows, Rows &false_rows, float &total_weight) {
     Rows missing;
     for (const auto &row: rows) {
-        total_weight += row.weight;
+        total_weight += row.second;
         int match = question.match(row, c45);
         if (match == 2) {
             missing.push_back(row);
@@ -412,7 +333,7 @@ Rows partition(const Rows &rows, const Question &question, bool c45, std::vector
     Rows missing;
     splits.resize(attrValues[question.column].size());
     for (const auto &row: rows) {
-        total_weight += row.weight;
+        total_weight += row.second;
         int match = question.match(row, c45);
         if (match == (int)attrValues[question.column].size()) {
             missing.push_back(row);
@@ -499,7 +420,7 @@ void find_best_split_indian(Rows &rows, float &best_gain,
                             Question &best_question, int max_buckets, bool c45) {
     best_gain = 0;
     float current_uncertainty = gini(rows);
-    int n_features = rows[0].size() - 1;
+    int n_features = rows[0].first.size() - 1;
     for (int column = 0; column < n_features; ++column) {
         if (isContinuous[column]) {
             split_continuous(rows, column, current_uncertainty, best_gain, best_question, max_buckets, c45);
@@ -540,10 +461,10 @@ void hellinger_split_continuous(const Rows &rows, int column, int tp,
         for (const auto &row: rows) {
             if (question.match(row, c45)) {
                 ++lsize;
-                if ((int)row.back() == minorityClass) ++tfvp;
+                if ((int)row.first.back() == minorityClass) ++tfvp;
             } else {
                 ++rsize;
-                if ((int)row.back() == minorityClass) ++tfwp;
+                if ((int)row.first.back() == minorityClass) ++tfwp;
             }
         }
         if (lsize == 0 || rsize == 0) {
@@ -572,10 +493,10 @@ void hellinger_split_discrete(const Rows &rows, int column, int tp,
         for (const auto &row: rows) {
             if (question.match(row, c45)) {
                 ++lsize;
-                if ((int)row.back() == minorityClass) ++tfvp;
+                if ((int)row.first.back() == minorityClass) ++tfvp;
             } else {
                 ++rsize;
-                if ((int)row.back() == minorityClass) ++tfwp;
+                if ((int)row.first.back() == minorityClass) ++tfwp;
             }
         }
         if (lsize == 0 || rsize == 0) {
@@ -592,16 +513,16 @@ void hellinger_split_discrete(const Rows &rows, int column, int tp,
 void new_hellinger_split_continuous(Rows &rows, int column,
                                     float &best_gain, Question &best_question) {
     std::sort(rows.begin(), rows.end(), [column](const Row &a, const Row &b){
-        return a[column] < b[column];
+        return a.first[column] < b.first[column];
     });
     std::vector<float> leftFreq(classes.size()), rightFreq(classes.size());
     float S = 0.0f, toSub = 0.0f;
     for (const auto &row: rows) {
-        if (Utils::eq(row[column], MISSING)) {
-            toSub += row.weight;
+        if (Utils::eq(row.first[column], MISSING)) {
+            toSub += row.second;
         } else {
-            rightFreq[(int)row.back()] += row.weight;
-            S += row.weight;
+            rightFreq[(int)row.first.back()] += row.second;
+            S += row.second;
         }
     }
     float minLeaf = std::min(25.0f, std::max(0.1f*S/(classes.size()), 2.0f)); // 2 should prolly be a variable oh well
@@ -612,18 +533,18 @@ void new_hellinger_split_continuous(Rows &rows, int column,
     int rsize = rows.size(), lsize = 0;
     for (int i = 1; i < (int)rows.size()-1; ++i) {
         const auto &row = rows[i];
-        if (row[column] == MISSING) break;
-        float value = rows[i-1][column];
-        rightFreq[(int)row.back()] -= row.weight;
-        if (Utils::eq(rightFreq[(int)row.back()], 0)) {
-            rightFreq[(int)row.back()] = 0.0f;
+        if (row.first[column] == MISSING) break;
+        float value = rows[i-1].first[column];
+        rightFreq[(int)row.first.back()] -= row.second;
+        if (Utils::eq(rightFreq[(int)row.first.back()], 0)) {
+            rightFreq[(int)row.first.back()] = 0.0f;
         }
         --rsize;
-        leftFreq[(int)rows[i-1].back()] += rows[i-1].weight;
+        leftFreq[(int)rows[i-1].first.back()] += rows[i-1].second;
         ++lsize;
         if (lsize == 0) continue;
         if (rsize == 0) break;
-        if (Utils::eq(row[column], value)) continue;
+        if (Utils::eq(row.first[column], value)) continue;
         float dblsum = 0;
         int nPairs = 0;
         for (int c1 = 0; c1 < (int)classes.size()-1; ++c1) {
@@ -642,7 +563,7 @@ void new_hellinger_split_continuous(Rows &rows, int column,
         float gain = dblsum/nPairs;
         if (gain > best_gain) {
             best_gain = gain;
-            best_question = {column, row[column]};
+            best_question = {column, row.first[column]};
         }
     }
 }
@@ -652,11 +573,11 @@ void new_hellinger_split_discrete(const Rows &rows, int column,
     // +1 for missing values
     std::vector<std::vector<float>> attrClassCnts(attrValues[column].size()+1, std::vector<float>(classes.size()));
     for (const auto &row: rows) {
-        float value = row[column];
+        float value = row.first[column];
         if (value == MISSING) {
             value = attrValues[column].size();
         }
-        attrClassCnts[(int)value][(int)row.back()] += row.weight;
+        attrClassCnts[(int)value][(int)row.first.back()] += row.second;
     }
     int legitChildren = 0;
     float total = 0.0f;
@@ -710,7 +631,7 @@ void find_best_split_hellinger(Rows &rows,
                                int max_buckets, bool c45) {
     best_gain = 0;
     float tp = Utils::count(rows, minorityClass);
-    int n_features = rows[0].size() - 1;
+    int n_features = rows[0].first.size() - 1;
     for (int column = 0; column < n_features; ++column) {
         if (isContinuous[column]) {
             hellinger_split_continuous(rows, column, tp, best_gain, best_question, max_buckets, c45);
@@ -772,7 +693,7 @@ void find_best_split_C45_IG(Rows &rows,
                             int max_buckets, bool c45) {
     best_gain = 0;
     float beforeEntropy = entropy(rows);
-    int n_features = rows[0].size() - 1;
+    int n_features = rows[0].first.size() - 1;
     for (int column = 0; column < n_features; ++column) {
         if (isContinuous[column]) {
             IG_split_continuous(rows, column, beforeEntropy, best_gain, best_question, max_buckets, c45, false);
@@ -787,7 +708,7 @@ void find_best_split_C45_IGR(Rows &rows,
                              int max_buckets, bool c45) {
     best_gain = 0;
     float beforeEntropy = entropy(rows);
-    int n_features = rows[0].size() - 1;
+    int n_features = rows[0].first.size() - 1;
     for (int column = 0; column < n_features; ++column) {
         if (isContinuous[column]) {
             IG_split_continuous(rows, column, beforeEntropy, best_gain, best_question, max_buckets, c45, true);
@@ -801,7 +722,7 @@ void find_best_split_C45_hellinger(Rows &rows,
                                    float &best_gain, Question &best_question,
                                    int, bool) {
     best_gain = 0;
-    int n_features = rows[0].size() - 1;
+    int n_features = rows[0].first.size() - 1;
     for (int column = 0; column < n_features; ++column) {
         if (isContinuous[column]) {
             new_hellinger_split_continuous(rows, column, best_gain, best_question);
@@ -855,7 +776,7 @@ Node *build_C45_tree(Rows &rows, int depth, int max_buckets) {
     for (const auto &row: missing) {
         for (auto &split: splits) {
             split.push_back(row);
-            split.back().weight *= (float)split.size() / total_rows;
+            split.back().second *= (float)split.size() / total_rows;
         }
     }
 
@@ -911,8 +832,8 @@ std::vector<float> classify(const Row &row, Node *node, bool c45 = false) {
     if (node->isLeaf) {
         return laplace(node->predictions);
     }
-    if (Utils::eq(row[node->question.column], MISSING)) {
-        // if the value is missing return a weighted average of all children
+    if (Utils::eq(row.first[node->question.column], MISSING)) {
+        // if the value is missing return a.seconded average of all children
         std::vector<float> distribution(classes.size());
         for (const auto &child: node->children) {
             std::vector<float> returned = classify(row, child, c45);
@@ -1001,18 +922,18 @@ void getData(const std::string &filestub, Rows &data) {
     maxs.resize(attrValues.size(), NAN);
     for (int lineno = 0; getline(fin, line); ++lineno) {
         auto values = parseLine(line);
-        data.emplace_back(values.size());
+        data.emplace_back(values.size(), 1.0f);
         for (int column = 0; column < (int)values.size()-1; ++column) {
             if (values[column] == "?") {
-                data.back()[column] = MISSING;
+                data.back().first[column] = MISSING;
             } else if (isContinuous[column]) {
-                data.back()[column] = std::atof(values[column].c_str());
+                data.back().first[column] = std::atof(values[column].c_str());
                 if (std::isnan(mins[column])) {
-                    mins[column] = data.back()[column];
-                    maxs[column] = data.back()[column];
+                    mins[column] = data.back().first[column];
+                    maxs[column] = data.back().first[column];
                 }
-                mins[column] = std::min(mins[column], data.back()[column]);
-                maxs[column] = std::max(maxs[column], data.back()[column]);
+                mins[column] = std::min(mins[column], data.back().first[column]);
+                maxs[column] = std::max(maxs[column], data.back().first[column]);
             } else {
                 auto x = std::find(attrValues[column].begin(),
                                    attrValues[column].end(),
@@ -1025,7 +946,7 @@ void getData(const std::string &filestub, Rows &data) {
                     fprintf(stderr, "\nCheck line %d\nThat don't exist bro.\n", lineno);
                     exit(1);
                 }
-                data.back()[column] = x-attrValues[column].begin();
+                data.back().first[column] = x-attrValues[column].begin();
             }
         }
         auto x = std::find(classes.begin(), classes.end(), values.back());
@@ -1033,12 +954,12 @@ void getData(const std::string &filestub, Rows &data) {
             fprintf(stderr, "That class don't exist bro.");
             exit(1);
         }
-        data.back().back() = x-classes.begin();
+        data.back().first.back() = x-classes.begin();
     }
     fin.close();
 
-    uniqueValueCount.resize(data[0].size()-1);
-    for (int column = 0; column < (int)data[0].size()-1; ++column) {
+    uniqueValueCount.resize(data[0].first.size()-1);
+    for (int column = 0; column < (int)data[0].first.size()-1; ++column) {
         uniqueValueCount[column] = feature_values(column, data).size();
     }
 
@@ -1096,7 +1017,7 @@ std::vector<float> class_weights(const std::vector<std::vector<float>> &probs) {
         ++weights[(int)prob.back()];
     }
     for (int cl = 0; cl < (int)classes.size(); ++cl) {
-        weights[cl] /= probs.size();
+       weights[cl] /= probs.size();
     }
     return weights;
 }
@@ -1164,11 +1085,11 @@ std::vector<float> test(const Rows &data, Node *tree, bool C45) {
     std::vector<int> TP(classes.size()), TN(classes.size()), FP(classes.size()), FN(classes.size());
     std::vector<std::vector<float>> probs;
     for (const auto &row: data) {
-        int actual = row.back();
+        int actual = row.first.back();
         probs.emplace_back(classify(row, tree, C45));
         //printf("Actual: %s. Predicted: ", classes[row.back().i].c_str()); print_leaf(hist, total);
         int prediction = std::max_element(probs.back().begin(), probs.back().end())-probs.back().begin();
-        probs.back().push_back((int)row.back());
+        probs.back().push_back((int)row.first.back());
         for (int cl = 0; cl < (int)classes.size(); ++cl) {
             if (prediction == actual) {
                 if (prediction == cl) ++TP[cl];
