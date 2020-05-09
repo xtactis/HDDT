@@ -13,26 +13,20 @@
 /* 
 *** STO NEVALJA ***
 
-1. .seconds" su nam krivo pretpostavljeni da trebaju biti 1
-    - smanje se za rows koji kad splittamo na atributu s missing value
-2. hellingera krivo izracunavamo jer smo retardirani
+1. hellingera krivo izracunavamo jer smo retardirani
     - za diskretne slucajeve je kompletno krivo (kinda emulira continuous)
     - za "continumous" radi samo za 2 klase
     - NOTE: attrClassCnts[][] pribrojava sve.seconds u rows za trenutacni atribut gdje
             prvi [] odgovara vrijednosti atributa, a drugi klasi na kraju rowa
 
-3. krucijalno, sve je presporo, a C4.5 je mozda najsporija stvar ikad napisana
-
-4. dosta toga je c/p, moglo bi se nekako generalizirati da CART i C4.5 budu bazne podjele,
+2. dosta toga je c/p, moglo bi se nekako generalizirati da CART i C4.5 budu bazne podjele,
     a racunanje split gain-a da bude neovisno o tome
 
-5. seemingly Information Gain Ratio konzistentno polucuje losijim rezultatima od Information Gain
+3. seemingly Information Gain Ratio konzistentno polucuje losijim rezultatima od Information Gain
     - ?? nema smisli
 
 */
 
-// TODO: handle missing data | medium-zajebano | high priority
-// TODO: potvrdi da C45 HD ima smisla u diskretnim slucajevima | high
 // TODO: implementiraj multi-class hellinger distance za CART algoritam | high
 // TODO: dodaj grid search za hiperparametre | medium | low
 // TODO: sve osim stats u log file or sth | ultra ez | low
@@ -40,7 +34,6 @@
 // TODO: fixati apsolutno sve da nije ovako fugly | zajebano | medium
 
 // lol
-// TODO: multi-core | samo kinda zajebano | low
 // TODO: gpu????? | poprilicno zajebano | ultra low
 // TODO: hellinger net????? lol | ultra zajebano delaj u pajtonima | hopefully nonexistent
 
@@ -130,6 +123,16 @@ namespace Utils {
         }
         return init;
     }
+
+    [[deprecated]] // unused but maybe it finds a purpose
+    float mFast_Log2(float val) {
+        union { float val; int32_t x; } u = { val };
+        register float log_2 = (float)(((u.x >> 23) & 255) - 128);              
+        u.x   &= ~(255 << 23);
+        u.x   += 127 << 23;
+        log_2 += ((-0.34484843f) * u.val + 2.02466578f) * u.val - 0.67487759f; 
+        return (log_2);
+    } 
 
     float log(float x) {
         if (eq(x, 0)) {
@@ -239,7 +242,7 @@ float entropy(const Rows &rows) {
     return -ent;
 }
 
-float new_entropy(const std::vector<int> &num_classes) {
+float new_entropy(const std::vector<float> &num_classes) {
     if (num_classes.back() == 0) return 0;
     float ent = 0;
     for (int i = 0; i < (int)num_classes.size()-1; ++i) { // -1 jer je zadnji broj redova
@@ -259,11 +262,11 @@ float informationGain(const Rows &rows, const std::vector<Rows> &splits, float b
     return beforeEntropy - afterEntropy;
 }
 
-float new_informationGain(int rowSize, const std::vector<std::vector<int>> &splits, float beforeEntropy) {
+float new_informationGain(int rowSize, const std::vector<std::vector<float>> &splits, float beforeEntropy) {
     float afterEntropy = 0;
-    for (const auto &split: splits) {
-        float weight = 1. * split.back() / rowSize;
-        afterEntropy += weight * new_entropy(split);
+    for (int i = 0; i < (int)splits.size()-1; ++i) {
+        float weight = 1. * splits[i].back() / rowSize;
+        afterEntropy += weight * new_entropy(splits[i]);
     }
     return beforeEntropy - afterEntropy;
 }
@@ -281,12 +284,12 @@ float informationGainRatio(const Rows &rows, const std::vector<Rows> &splits, fl
     return informationGain(rows, splits, beforeEntropy) / intrinsicValue(rows, splits);
 }
 
-float new_informationGainRatio(int rowSize, const std::vector<std::vector<int>> &splits, float beforeEntropy) {
+float new_informationGainRatio(int rowSize, const std::vector<std::vector<float>> &splits, float beforeEntropy) {
     float afterEntropy = 0;
     float iv = 0;
-    for (const auto &split: splits) {
-        float weight = 1. * split.back() / rowSize;
-        afterEntropy += weight * new_entropy(split);
+    for (int i = 0; i < (int)splits.size()-1; ++i) {
+        float weight = 1. * splits[i].back() / rowSize;
+        afterEntropy += weight * new_entropy(splits[i]);
         iv += weight * Utils::log(weight);
     }
     return (beforeEntropy - afterEntropy) / -iv;
@@ -304,9 +307,18 @@ std::set<float> feature_values(int col, const Rows &rows) {
 
 // u rows koliko ima labela == minorityClass takvih da je question.match(row)
 
+template<typename T>
+void partition_class_histogram(const Rows &rows, const Question &question, bool c45, std::vector<std::vector<T>> &splits) {
+    for (const auto &row: rows) {
+        splits[question.match(row, c45)][(int)row.first.back()] += row.second;
+        splits[question.match(row, c45)].back() += row.second;
+    }
+}
+
+template<int>
 void partition_class_histogram(const Rows &rows, const Question &question, bool c45, std::vector<std::vector<int>> &splits) {
     for (const auto &row: rows) {
-        ++splits[question.match(row, c45)][(int)row.first.back()]; // "false" should depend on c45
+        ++splits[question.match(row, c45)][(int)row.first.back()];
         ++splits[question.match(row, c45)].back();
     }
 }
@@ -370,22 +382,14 @@ void split_continuous(const Rows &rows, int column, float current_uncertainty,
     } else {
         values = feature_values(column, rows);
     }
-    int size = 2;
+    int size = 2+1; // +1 za missing
     std::vector<std::vector<int>> splits(size, std::vector<int>(classes.size()+1, 0)); // +1 za broj redova u tom splitu
     for (float value: values) {
         Question question = {column, value};
-        /*
-        Rows true_rows, false_rows;
-        partition(rows, question, true_rows, false_rows);
-        if (true_rows.size() == 0 || false_rows.size() == 0) {
-            continue;
-        }
-        float gain = gini_gain(true_rows, false_rows, current_uncertainty); //*/
-        //*
-        for (auto &split: splits) for (int &e: split) e = 0;
+        for (auto &split: splits) for (int &e: split) e = 0.0;
         partition_class_histogram(rows, question, c45, splits);
         if (splits[0].back() == 0 || splits[1].back() == 0) continue;
-        float gain = new_gini_gain(splits, current_uncertainty);//*/
+        float gain = new_gini_gain(splits, current_uncertainty);
         if (gain > best_gain) {
             best_gain = gain;
             best_question = question;
@@ -396,15 +400,11 @@ void split_continuous(const Rows &rows, int column, float current_uncertainty,
 void split_discrete(const Rows &rows, int column, float current_uncertainty,
                     float &best_gain, Question &best_question,
                     bool c45) {
-    int size = attrValues[column].size();
+    int size = attrValues[column].size()+1; // +1 za missing
     std::vector<std::vector<int>> splits(size, std::vector<int>(classes.size()+1, 0)); // +1 za broj redova u tom splitu
     for (int value = 0; value < (int)attrValues[column].size(); ++value) {
         Question question = {column, (float)value};
         Rows true_rows, false_rows;
-        //if (true_rows.size() == 0 || false_rows.size() == 0) {
-        //    continue;
-        //}
-        //float gain = gini_gain(true_rows, false_rows, current_uncertainty);
         for (auto &split: splits) for (int &e: split) e = 0;
         partition_class_histogram(rows, question, c45, splits);
         if (splits[0].back() == 0 || splits[1].back() == 0) continue;
@@ -455,11 +455,12 @@ void hellinger_split_continuous(const Rows &rows, int column, int tp,
         values = feature_values(column, rows);
     }
     for (float value: values) {
+        if (Utils::eq(value, MISSING)) break;
         Question question = {column, value};
         int lsize = 0, rsize = 0;
         int tfvp = 0, tfwp = 0;
         for (const auto &row: rows) {
-            if (question.match(row, c45)) {
+            if (question.match(row, c45) == 1) {
                 ++lsize;
                 if ((int)row.first.back() == minorityClass) ++tfvp;
             } else {
@@ -491,7 +492,7 @@ void hellinger_split_discrete(const Rows &rows, int column, int tp,
         int lsize = 0, rsize = 0;
         int tfvp = 0, tfwp = 0;
         for (const auto &row: rows) {
-            if (question.match(row, c45)) {
+            if (question.match(row, c45) == 1) {
                 ++lsize;
                 if ((int)row.first.back() == minorityClass) ++tfvp;
             } else {
@@ -570,8 +571,9 @@ void new_hellinger_split_continuous(Rows &rows, int column,
 
 void new_hellinger_split_discrete(const Rows &rows, int column,
                                   float &best_gain, Question &best_question) {
-    // +1 for missing values
-    std::vector<std::vector<float>> attrClassCnts(attrValues[column].size()+1, std::vector<float>(classes.size()));
+                                                  // +1 for missing values
+    std::vector<std::vector<float>> attrClassCnts(attrValues[column].size()+1,
+                                                  std::vector<float>(classes.size()));
     for (const auto &row: rows) {
         float value = row.first[column];
         if (value == MISSING) {
@@ -654,11 +656,11 @@ void IG_split_continuous(const Rows &rows, int column, float beforeEntropy,
     } else {
         values = feature_values(column, rows);
     }
-    int size = 2;
-    std::vector<std::vector<int>> splits(size, std::vector<int>(classes.size()+1, 0)); // +1 za broj redova u tom splitu
+    int size = 2+1; // +1 za missing
+    std::vector<std::vector<float>> splits(size, std::vector<float>(classes.size()+1, 0)); // +1 za broj redova u tom splitu
     for (float value: values) {
         Question question = {column, value};
-        for (auto &split: splits) for (int &e: split) e = 0;
+        for (auto &split: splits) for (float &e: split) e = 0;
         partition_class_histogram(rows, question, c45, splits);
         float gain = (IGR?new_informationGainRatio:new_informationGain)(rows.size(), splits, beforeEntropy);
         if (gain > best_gain) {
@@ -670,15 +672,11 @@ void IG_split_continuous(const Rows &rows, int column, float beforeEntropy,
 
 void IG_split_discrete(const Rows &rows, int column, float beforeEntropy,
                        float &best_gain, Question &best_question, bool c45, bool IGR) { // IGR should be a template argument
-    int size = attrValues[column].size();
-    std::vector<std::vector<int>> splits(size, std::vector<int>(classes.size()+1, 0)); // +1 za broj redova u tom splitu
+    int size = attrValues[column].size()+1; // +1 za missing
+    std::vector<std::vector<float>> splits(size, std::vector<float>(classes.size()+1, 0)); // +1 za broj redova u tom splitu
     for (int value = 0; value < (int)attrValues[column].size(); ++value) {
         Question question = {column, 0.0f}; // value is unused
-        /*
-        std::vector<Rows> splits;
-        partition(rows, question, c45, splits);
-        float gain = informationGain(rows, splits, beforeEntropy);//*/
-        for (auto &split: splits) for (int &e: split) e = 0;
+        for (auto &split: splits) for (float &e: split) e = 0;
         partition_class_histogram(rows, question, c45, splits);
         float gain = (IGR?new_informationGainRatio:new_informationGain)(rows.size(), splits, beforeEntropy);
         if (gain > best_gain) {
