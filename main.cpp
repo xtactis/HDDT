@@ -13,23 +13,16 @@
 /* 
 *** STO NEVALJA ***
 
-1. hellingera krivo izracunavamo jer smo retardirani
-    - za diskretne slucajeve je kompletno krivo (kinda emulira continuous)
-    - za "continumous" radi samo za 2 klase
-    - NOTE: attrClassCnts[][] pribrojava sve.seconds u rows za trenutacni atribut gdje
-            prvi [] odgovara vrijednosti atributa, a drugi klasi na kraju rowa
-
-2. dosta toga je c/p, moglo bi se nekako generalizirati da CART i C4.5 budu bazne podjele,
+1. dosta toga je c/p, moglo bi se nekako generalizirati da CART i C4.5 budu bazne podjele,
     a racunanje split gain-a da bude neovisno o tome
 
-3. seemingly Information Gain Ratio konzistentno polucuje losijim rezultatima od Information Gain
+2. seemingly Information Gain Ratio konzistentno polucuje losijim rezultatima od Information Gain
     - ?? nema smisli
 
 */
 
 // FIXME: print tree je broken
 
-// TODO: implementiraj multi-class hellinger distance za CART algoritam | high
 // TODO: dodaj grid search za hiperparametre | medium | low
 // TODO: sve osim stats u log file or sth | ultra ez | low
 // TODO: dodaj mogucnost spremanja stvorenog stabla | kinda ez-medium | low
@@ -68,14 +61,11 @@ using Row = std::pair<std::vector<float>, float>;
 //using Row = RowT<float>;
 using Rows = std::vector<Row>;
 
-int minorityClass; // TODO: get rid of these globals, legitimately just send them to everything that uses them
-std::vector<int> totalHist;
-std::vector<std::string> classes;
+std::vector<std::string> classes; // TODO: get rid of these globals, legitimately just send them to everything that uses them
 std::vector<std::string> attrNames;
 std::vector<std::vector<std::string>> attrValues; // att[0] == {"b", "o", "x"}
 std::vector<bool> isContinuous;
 std::vector<float> mins, maxs;
-std::vector<int> uniqueValueCount;
 
 namespace Utils {
     const float epsilon = 1e-6;
@@ -306,8 +296,6 @@ std::set<float> feature_values(int col, const Rows &rows) {
     }
     return values;
 }
-
-// u rows koliko ima labela == minorityClass takvih da je question.match(row)
 
 template<typename T>
 void partition_class_histogram(const Rows &rows, const Question &question, bool c45, std::vector<std::vector<T>> &splits) {
@@ -978,18 +966,6 @@ void getData(const std::string &filestub, Rows &data) {
         data.back().first.back() = x-classes.begin();
     }
     fin.close();
-
-    uniqueValueCount.resize(data[0].first.size()-1);
-    for (int column = 0; column < (int)data[0].first.size()-1; ++column) {
-        uniqueValueCount[column] = feature_values(column, data).size();
-    }
-
-    if (classes.size() == 2) { // TODO: bilo bi lipo da radi i za vise od 2 klasice
-        totalHist.resize(2);
-        totalHist[0] = Utils::count(data, 0);
-        totalHist[1] = data.size()-totalHist[0];
-    }
-    minorityClass = min_element(totalHist.begin(), totalHist.end())-totalHist.begin();
 }
 
 float accuracy(int TP, int TN, int FP, int FN) {
