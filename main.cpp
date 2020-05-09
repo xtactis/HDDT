@@ -27,6 +27,8 @@
 
 */
 
+// FIXME: print tree je broken
+
 // TODO: implementiraj multi-class hellinger distance za CART algoritam | high
 // TODO: dodaj grid search za hiperparametre | medium | low
 // TODO: sve osim stats u log file or sth | ultra ez | low
@@ -127,7 +129,7 @@ namespace Utils {
     [[deprecated]] // unused but maybe it finds a purpose
     float mFast_Log2(float val) {
         union { float val; int32_t x; } u = { val };
-        register float log_2 = (float)(((u.x >> 23) & 255) - 128);              
+        float log_2 = (float)(((u.x >> 23) & 255) - 128);              
         u.x   &= ~(255 << 23);
         u.x   += 127 << 23;
         log_2 += ((-0.34484843f) * u.val + 2.02466578f) * u.val - 0.67487759f; 
@@ -432,81 +434,121 @@ void find_best_split_indian(Rows &rows, float &best_gain,
 /* </google indian> */
 
 /* <hellinger> */
-float hellinger_distance(int lsize, int rsize, float tp, float tfvp, float tfwp) {
-    float tfvn = lsize - tfvp;
-    float tfwn = rsize - tfwp;
-    float tn = (lsize + rsize) - tp;
-    //printf("%f %f %f %f %f %f\n", tfvn, tfwn, tn, tfvp, tfwp, tp);
-    return Utils::sqr(std::sqrt(tfvp/tp) - std::sqrt(tfvn/tn))
-         + Utils::sqr(std::sqrt(tfwp/tp) - std::sqrt(tfwn/tn));
-}
-
-void hellinger_split_continuous(const Rows &rows, int column, int tp,
+void hellinger_split_continuous(Rows &rows, int column,
                                 float &best_gain, Question &best_question,
-                                int max_buckets, bool c45) {
-    std::set<float> values;
-    if (max_buckets != 0) {
-        float min = mins[column], max = maxs[column];
-        float step = (max-min)/max_buckets;
-        for (int bucket = 0; bucket <= max_buckets; ++bucket) {
-            values.insert(bucket*step+min);
+                                int) {
+    std::sort(rows.begin(), rows.end(), [column](const Row &a, const Row &b){
+        return a.first[column] < b.first[column];
+    });
+    std::vector<int> leftFreq(classes.size()), rightFreq(classes.size());
+    int S = 0, toSub = 0;
+    for (const auto &row: rows) {
+        if (Utils::eq(row.first[column], MISSING)) {
+            ++toSub;
+        } else {
+            ++rightFreq[(int)row.first.back()];
+            ++S;
         }
-    } else {
-        values = feature_values(column, rows);
     }
-    for (float value: values) {
-        if (Utils::eq(value, MISSING)) break;
-        Question question = {column, value};
-        int lsize = 0, rsize = 0;
-        int tfvp = 0, tfwp = 0;
-        for (const auto &row: rows) {
-            if (question.match(row, c45) == 1) {
-                ++lsize;
-                if ((int)row.first.back() == minorityClass) ++tfvp;
-            } else {
-                ++rsize;
-                if ((int)row.first.back() == minorityClass) ++tfwp;
+    if (S < 2) {
+        // not enough values to branch, do not pass go, do not collect howevermany dollars
+        return;
+    }
+    int rsize = rows.size(), lsize = 0;
+    for (int i = 1; i < (int)rows.size()-1; ++i) {
+        if (Utils::eq(rows[i].first[column], MISSING)) break;
+        --rightFreq[(int)rows[i].first.back()];
+        --rsize;
+        ++leftFreq[(int)rows[i-1].first.back()];
+        ++lsize;
+        if (rsize == 0) break;
+        if (Utils::eq(rows[i].first[column], rows[i-1].first[column])) continue;
+        float sum = 0;
+        int pairs = classes.size()*(classes.size()-1)/2;
+        for (int c1 = 0; c1 < (int)classes.size()-1; ++c1) {
+            for (int c2 = c1+1; c2 < (int)classes.size(); ++c2) {
+                //find size of X1 and X2
+                float nX1 = rightFreq[c1] + leftFreq[c1];
+                float nX2 = rightFreq[c2] + leftFreq[c2];
+                //since attribute values can only be "left" or "right" only two terms in summation
+                float radicand = Utils::sqr(sqrt(1.*rightFreq[c2]/nX2) - sqrt(1.*rightFreq[c1]/nX1))+
+                                 Utils::sqr(sqrt(1.*leftFreq[c2]/nX2) - sqrt(1.*leftFreq[c1]/nX1));
+                sum += sqrt(radicand);
+                //DEBUG("BRUH");
             }
         }
-        if (lsize == 0 || rsize == 0) {
-            continue;
-        }
-        float gain = hellinger_distance(lsize, rsize, tp, tfvp, tfwp);
-        //printf("%f\n", gain);
+        float gain = 1.*sum/pairs;
+        //printf("%f/%d = %f\n", sum, pairs, gain);
         if (gain > best_gain) {
             best_gain = gain;
-            best_question = question;
+            best_question = {column, rows[i].first[column]};
         }
     }
 }
 
-void hellinger_split_discrete(const Rows &rows, int column, int tp,
-                              float &best_gain, Question &best_question,
-                              bool c45) {
-    //std::vector<std::vector<float>> attrClassCnts(attrValues[column].size(), std::vector<float>(classes.size()));
-    /*for (const auto &row: rows) {
-        attrClassCnts[row[column].i][row.back().i] += 1.0f; // should be weight
-    }*/
+void hellinger_split_discrete(const Rows &rows, int column,
+                              float &best_gain, Question &best_question) {
+    std::vector<std::vector<int>> attrClassCnts(attrValues[column].size(), std::vector<int>(classes.size()));
+    Rows missing;
+    std::vector<int> valueCounts(attrValues[column].size());
+    for (const auto &row: rows) {
+        if (Utils::eq(row.first[column], MISSING)) {
+            missing.push_back(row);
+            continue;
+        }
+        ++attrClassCnts[(int)row.first[column]][(int)row.first.back()]; // I'm not sure if CART uses weighted rows?
+        ++valueCounts[(int)row.first[column]];
+    }
+    // find the value that contains the most instances/rows
+    int maxValueCount = std::max_element(valueCounts.begin(), valueCounts.end())-valueCounts.begin();
+    valueCounts[maxValueCount] += missing.size();
+    // place the missing instances into that one
+    for (const auto &row: missing) {
+        ++attrClassCnts[maxValueCount][(int)row.first.back()];
+    }
+    int pairs = classes.size()*(classes.size()-1)/2;
     for (int value = 0; value < (int)attrValues[column].size(); ++value) {
         Question question = {column, (float)value};
-        int lsize = 0, rsize = 0;
-        int tfvp = 0, tfwp = 0;
-        for (const auto &row: rows) {
-            if (question.match(row, c45) == 1) {
-                ++lsize;
-                if ((int)row.first.back() == minorityClass) ++tfvp;
-            } else {
-                ++rsize;
-                if ((int)row.first.back() == minorityClass) ++tfwp;
+        float sum = 0.0f;
+        int rsize = valueCounts[value];
+        int lsize = rows.size() - rsize;
+        if (lsize == 0 || rsize == 0) continue;
+        for (int c1 = 0; c1 < (int)classes.size()-1; ++c1) {
+            for (int c2 = c1+1; c2 < (int)classes.size(); ++c2) {
+                float excludeCount[2] = {};
+                float includeCount[2] = {(float)attrClassCnts[value][c1], (float)attrClassCnts[value][c2]};
+                for (int exValue = 0; exValue < (int)attrValues[column].size(); ++exValue) {
+                    if (value == exValue) continue;
+                    excludeCount[0] += attrClassCnts[exValue][c1];
+                    excludeCount[1] += attrClassCnts[exValue][c2];
+                }
+                float nX1 = includeCount[0] + excludeCount[0];
+                float nX2 = includeCount[1] + excludeCount[1];
+
+                float radicand = Utils::sqr(sqrt(1.*includeCount[1]/nX2) - sqrt(1.*includeCount[0]/nX1))+
+                                 Utils::sqr(sqrt(1.*excludeCount[1]/nX2) - sqrt(1.*excludeCount[0]/nX1));
+                sum += sqrt(radicand);
             }
         }
-        if (lsize == 0 || rsize == 0) {
-            continue;
-        }
-        float gain = hellinger_distance(lsize, rsize, tp, tfvp, tfwp);
+
+        float gain = sum/pairs;
         if (gain > best_gain) {
             best_gain = gain;
             best_question = question;
+        }
+    }
+}
+
+void find_best_split_hellinger(Rows &rows,
+                               float &best_gain, Question &best_question,
+                               int max_buckets, bool) {
+    best_gain = 0;
+    int n_features = rows[0].first.size() - 1;
+    for (int column = 0; column < n_features; ++column) {
+        if (isContinuous[column]) {
+            hellinger_split_continuous(rows, column, best_gain, best_question, max_buckets);
+        } else {
+            hellinger_split_discrete(rows, column, best_gain, best_question);
         }
     }
 }
@@ -546,8 +588,8 @@ void new_hellinger_split_continuous(Rows &rows, int column,
         if (lsize == 0) continue;
         if (rsize == 0) break;
         if (Utils::eq(row.first[column], value)) continue;
-        float dblsum = 0;
-        int nPairs = 0;
+        float sum = 0;
+        int pairs = 0;
         for (int c1 = 0; c1 < (int)classes.size()-1; ++c1) {
             for (int c2 = c1+1; c2 < (int)classes.size(); ++c2) {
                 //find size of X1 and X2
@@ -557,11 +599,11 @@ void new_hellinger_split_continuous(Rows &rows, int column,
                 float radicand = Utils::sqr(sqrt(1.*rightFreq[c2]/nX2) - sqrt(1.*rightFreq[c1]/nX1))+
                                  Utils::sqr(sqrt(1.*leftFreq[c2]/nX2) - sqrt(1.*leftFreq[c1]/nX1));
 
-                dblsum += sqrt(radicand);
-                nPairs++;
+                sum += sqrt(radicand);
+                pairs++;
             }
         }
-        float gain = dblsum/nPairs;
+        float gain = sum/pairs;
         if (gain > best_gain) {
             best_gain = gain;
             best_question = {column, row.first[column]};
@@ -599,8 +641,8 @@ void new_hellinger_split_discrete(const Rows &rows, int column,
     }
     float toSub = Utils::accumulate(attrClassCnts.back());
 
-    float dblsum = 0;
-	int nPairs = 0;
+    float sum = 0;
+	int pairs = 0;
     for (int c1 = 0; c1 < (int)classes.size()-1; ++c1) {
         for (int c2 = c1+1; c2 < (int)classes.size(); ++c2) {
             float nX1 = 0, nX2 = 0;
@@ -608,44 +650,42 @@ void new_hellinger_split_discrete(const Rows &rows, int column,
 				nX1+=attrClassCnts[k][c1];
 				nX2+=attrClassCnts[k][c2];
 			}
-			float fradicand = 0;
-			//find size of X1j and X2j -- attrClassCnts[j][0], [j][1]
-			//sum up the radicand 
+			float radicand = 0;
 			for(int k = 0; k < (int)attrValues[column].size(); ++k){
 				float nX1j = attrClassCnts[k][c1];
 				float nX2j = attrClassCnts[k][c2];    
 
-				fradicand += Utils::sqr((sqrt(1.*nX1j/nX1) - sqrt(1.*nX2j/nX2)));
+				radicand += Utils::sqr((sqrt(1.*nX1j/nX1) - sqrt(1.*nX2j/nX2)));
 			}
-			dblsum += sqrt(fradicand);
-			nPairs++;
+			sum += sqrt(radicand);
+			pairs++;
         }
     }
-    float gain = (1-toSub/(toSub+total))*(dblsum/nPairs);
+    float gain = (1-toSub/(toSub+total))*(sum/pairs);
     if (gain > best_gain) {
         best_gain = gain;
         best_question = {column, 0};
     }
 }
 
-void find_best_split_hellinger(Rows &rows,
-                               float &best_gain, Question &best_question,
-                               int max_buckets, bool c45) {
+void find_best_split_C45_hellinger(Rows &rows,
+                                   float &best_gain, Question &best_question,
+                                   int, bool) {
     best_gain = 0;
-    float tp = Utils::count(rows, minorityClass);
     int n_features = rows[0].first.size() - 1;
     for (int column = 0; column < n_features; ++column) {
         if (isContinuous[column]) {
-            hellinger_split_continuous(rows, column, tp, best_gain, best_question, max_buckets, c45);
+            new_hellinger_split_continuous(rows, column, best_gain, best_question);
         } else {
-            hellinger_split_discrete(rows, column, tp, best_gain, best_question, c45);
+            new_hellinger_split_discrete(rows, column, best_gain, best_question);
         }
     }
 }
 /* </hellinger> */
 
+template<bool IGR>
 void IG_split_continuous(const Rows &rows, int column, float beforeEntropy,
-                         float &best_gain, Question &best_question, int max_buckets, bool c45, bool IGR) { // IGR should be templated
+                         float &best_gain, Question &best_question, int max_buckets, bool c45) {
     std::set<float> values;
     if (max_buckets != 0) {
         float min = mins[column], max = maxs[column];
@@ -662,7 +702,12 @@ void IG_split_continuous(const Rows &rows, int column, float beforeEntropy,
         Question question = {column, value};
         for (auto &split: splits) for (float &e: split) e = 0;
         partition_class_histogram(rows, question, c45, splits);
-        float gain = (IGR?new_informationGainRatio:new_informationGain)(rows.size(), splits, beforeEntropy);
+        float gain;
+        if constexpr (IGR) {
+            gain = new_informationGainRatio(rows.size(), splits, beforeEntropy);
+        } else {
+            gain = new_informationGain(rows.size(), splits, beforeEntropy);
+        }
         if (gain > best_gain) {
             best_gain = gain;
             best_question = question;
@@ -670,15 +715,21 @@ void IG_split_continuous(const Rows &rows, int column, float beforeEntropy,
     }
 }
 
+template<bool IGR>
 void IG_split_discrete(const Rows &rows, int column, float beforeEntropy,
-                       float &best_gain, Question &best_question, bool c45, bool IGR) { // IGR should be a template argument
+                       float &best_gain, Question &best_question, bool c45) {
     int size = attrValues[column].size()+1; // +1 za missing
     std::vector<std::vector<float>> splits(size, std::vector<float>(classes.size()+1, 0)); // +1 za broj redova u tom splitu
     for (int value = 0; value < (int)attrValues[column].size(); ++value) {
         Question question = {column, 0.0f}; // value is unused
         for (auto &split: splits) for (float &e: split) e = 0;
         partition_class_histogram(rows, question, c45, splits);
-        float gain = (IGR?new_informationGainRatio:new_informationGain)(rows.size(), splits, beforeEntropy);
+        float gain;
+        if constexpr (IGR) {
+            gain = new_informationGainRatio(rows.size(), splits, beforeEntropy);
+        } else {
+            gain = new_informationGain(rows.size(), splits, beforeEntropy);
+        }
         if (gain > best_gain) {
             best_gain = gain;
             best_question = question;
@@ -686,7 +737,8 @@ void IG_split_discrete(const Rows &rows, int column, float beforeEntropy,
     }
 }
 
-void find_best_split_C45_IG(Rows &rows,
+template<bool IGR>
+void find_best_split_C45(Rows &rows,
                             float &best_gain, Question &best_question,
                             int max_buckets, bool c45) {
     best_gain = 0;
@@ -694,38 +746,9 @@ void find_best_split_C45_IG(Rows &rows,
     int n_features = rows[0].first.size() - 1;
     for (int column = 0; column < n_features; ++column) {
         if (isContinuous[column]) {
-            IG_split_continuous(rows, column, beforeEntropy, best_gain, best_question, max_buckets, c45, false);
+            IG_split_continuous<IGR>(rows, column, beforeEntropy, best_gain, best_question, max_buckets, c45);
         } else {
-            IG_split_discrete(rows, column, beforeEntropy, best_gain, best_question, c45, false);
-        }
-    }
-}
-
-void find_best_split_C45_IGR(Rows &rows,
-                             float &best_gain, Question &best_question,
-                             int max_buckets, bool c45) {
-    best_gain = 0;
-    float beforeEntropy = entropy(rows);
-    int n_features = rows[0].first.size() - 1;
-    for (int column = 0; column < n_features; ++column) {
-        if (isContinuous[column]) {
-            IG_split_continuous(rows, column, beforeEntropy, best_gain, best_question, max_buckets, c45, true);
-        } else {
-            IG_split_discrete(rows, column, beforeEntropy, best_gain, best_question, c45, true);
-        }
-    }
-}
-
-void find_best_split_C45_hellinger(Rows &rows,
-                                   float &best_gain, Question &best_question,
-                                   int, bool) {
-    best_gain = 0;
-    int n_features = rows[0].first.size() - 1;
-    for (int column = 0; column < n_features; ++column) {
-        if (isContinuous[column]) {
-            new_hellinger_split_continuous(rows, column, best_gain, best_question);
-        } else {
-            new_hellinger_split_discrete(rows, column, best_gain, best_question);
+            IG_split_discrete<IGR>(rows, column, beforeEntropy, best_gain, best_question, c45);
         }
     }
 }
@@ -1064,10 +1087,10 @@ Node *train(Rows &data, int max_depth, int max_buckets, bool C45, bool hellinger
         if (C45) {
             if (IGR) {
                 fprintf(stderr, "Building C4.5 (IGR) decision tree...\n");
-                tree = build_C45_tree<find_best_split_C45_IGR>(data, max_depth, max_buckets);
+                tree = build_C45_tree<find_best_split_C45<true>>(data, max_depth, max_buckets);
             } else {
                 fprintf(stderr, "Building C4.5 (IG) decision tree...\n");
-                tree = build_C45_tree<find_best_split_C45_IG>(data, max_depth, max_buckets);
+                tree = build_C45_tree<find_best_split_C45<false>>(data, max_depth, max_buckets);
             }
         } else {
             fprintf(stderr, "Building CART (Gini) decision tree...\n");
