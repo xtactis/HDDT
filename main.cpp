@@ -21,8 +21,6 @@
 
 */
 
-// FIXME: print tree je broken
-
 // TODO: dodaj grid search za hiperparametre | medium | low
 // TODO: sve osim stats u log file or sth | ultra ez | low
 // TODO: dodaj mogucnost spremanja stvorenog stabla | kinda ez-medium | low
@@ -802,29 +800,46 @@ Node *build_C45_tree(Rows &rows, int depth, int max_buckets) {
     return node;
 }
 
-void print_tree(Node *node, const std::string &spacing="") {
+void print_tree(Node *node, bool C45, const std::string &spacing="") {
     if (node->isLeaf) {
-        printf("%sPredict {", spacing.c_str());
+        printf("Predict {");
         bool comma = false;
         for (int i = 0; i < (int)classes.size(); ++i) { // should always be 2
             if (node->predictions[i] == 0) continue;
-            printf("%s%s: %d", (comma?", ":""), classes[i].c_str(), node->predictions[i]);
+            if (C45) {
+                printf("%s%s: %f", (comma?", ":""), classes[i].c_str(), node->predictions[i]);
+            } else {
+                printf("%s%s: %d", (comma?", ":""), classes[i].c_str(), (int)node->predictions[i]);
+            }
             comma = true;
         }
         printf("}\n");
         return;
     }
-    printf("%s", spacing.c_str());
-    printf("Is %s ", attrNames[node->question.column].c_str());
-    if (isContinuous[node->question.column]) {
-        printf(">= %.3f?\n", node->question.value);
+    printf("\n%s", spacing.c_str());
+    if (C45) {
+        if (isContinuous[node->question.column]) {
+            printf("if %s >= %.3f: ", attrNames[node->question.column].c_str(), node->question.value);
+            print_tree(node->children[1], C45, spacing+"| ");
+            printf("%selse: ", spacing.c_str());
+            print_tree(node->children[0], C45, spacing+"| ");
+        } else {
+            printf("switch %s:\n", attrNames[node->question.column].c_str());
+            for (int child = 0; child < (int)node->children.size(); ++child) {
+                printf("%s| case %s: ", spacing.c_str(), attrValues[node->question.column][child].c_str()); // TODO: store more info about the node for better prints
+                print_tree(node->children[child], C45, spacing+"| | ");
+            }
+        }
     } else {
-        printf("== %s?\n", attrValues[node->question.column][(int)node->question.value].c_str());
-    }
-
-    for (int child = 0; child < (int)node->children.size(); ++child) {
-        printf("%s--> %d:\n", spacing.c_str(), child); // TODO: store more info about the node for better prints
-        print_tree(node->children[child], spacing+"  ");
+        printf("if %s ", attrNames[node->question.column].c_str());
+        if (isContinuous[node->question.column]) {
+            printf(">= %.3f: ", node->question.value);
+        } else {
+            printf("== %s: ", attrValues[node->question.column][(int)node->question.value].c_str());
+        }
+        print_tree(node->children[1], C45, spacing+"| ");
+        printf("%selse: ", spacing.c_str());
+        print_tree(node->children[0], C45, spacing+"| ");
     }
 }
 
@@ -1078,7 +1093,7 @@ Node *train(Rows &data, int max_depth, int max_buckets, bool C45, bool hellinger
 }
 
 std::vector<float> test(const Rows &data, Node *tree, bool C45) {
-    //print_tree(tree);
+    print_tree(tree, C45);
     std::vector<int> TP(classes.size()), TN(classes.size()), FP(classes.size()), FN(classes.size());
     std::vector<std::vector<float>> probs;
     for (const auto &row: data) {
