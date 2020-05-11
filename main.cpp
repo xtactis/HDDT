@@ -13,10 +13,12 @@
 /* 
 *** STO NEVALJA ***
 
-1. dosta toga je c/p, moglo bi se nekako generalizirati da CART i C4.5 budu bazne podjele,
+1. za heart-v dataset CART gini i HD imaju AUC manji od 0.5 lol
+
+2. dosta toga je c/p, moglo bi se nekako generalizirati da CART i C4.5 budu bazne podjele,
     a racunanje split gain-a da bude neovisno o tome
 
-2. seemingly Information Gain Ratio konzistentno polucuje losijim rezultatima od Information Gain
+3. seemingly Information Gain Ratio konzistentno polucuje losijim rezultatima od Information Gain
     - ?? nema smisli
 
 */
@@ -24,11 +26,11 @@
 // TODO: dodaj grid search za hiperparametre | medium | low
 // TODO: sve osim stats u log file or sth | ultra ez | low
 // TODO: dodaj mogucnost spremanja stvorenog stabla | kinda ez-medium | low
-// TODO: fixati apsolutno sve da nije ovako fugly | zajebano | medium
+// TODO: fixati apsolutno sve da nije ovako fugly | tricky | medium
 
 // lol
-// TODO: gpu????? | poprilicno zajebano | ultra low
-// TODO: hellinger net????? lol | ultra zajebano delaj u pajtonima | hopefully nonexistent
+// TODO: gpu????? | poprilicno tricky | ultra low
+// TODO: hellinger net????? lol | ultra tricky delaj u pajtonima | hopefully nonexistent
 
 // fpga support when
 
@@ -344,7 +346,7 @@ Rows partition(const Rows &rows, const Question &question, bool c45, std::vector
     return missing;
 }
 
-/* <google indian> */
+/* <google> */
 float gini_gain(const Rows &left, const Rows &right,
                 float current_uncertainty) {
     float p = 1. * left.size() / (left.size() + right.size());    
@@ -404,7 +406,7 @@ void split_discrete(const Rows &rows, int column, float current_uncertainty,
     }
 }
 
-void find_best_split_indian(Rows &rows, float &best_gain, 
+void find_best_split_google(Rows &rows, float &best_gain, 
                             Question &best_question, int max_buckets, bool c45) {
     best_gain = 0;
     float current_uncertainty = gini(rows);
@@ -417,7 +419,7 @@ void find_best_split_indian(Rows &rows, float &best_gain,
         }
     }
 }
-/* </google indian> */
+/* </google> */
 
 /* <hellinger> */
 void hellinger_split_continuous(Rows &rows, int column,
@@ -740,7 +742,7 @@ void find_best_split_C45(Rows &rows,
 }
 
 template<void (*split_function)(Rows &, float &, Question &, int, bool)>
-Node *build_CART_tree(Rows &rows, int depth, int max_buckets) {
+Node *build_CART_tree(Rows &&rows, int depth, int max_buckets) {
     float gain; 
     Question question;
     if (depth == 0) {
@@ -754,13 +756,13 @@ Node *build_CART_tree(Rows &rows, int depth, int max_buckets) {
     float total_weight = 0.0f;
     partition(rows, question, false, true_rows, false_rows, total_weight);
 
-    Node *true_branch = build_CART_tree<split_function>(true_rows, depth-1, max_buckets);
-    Node *false_branch = build_CART_tree<split_function>(false_rows, depth-1, max_buckets);
+    Node *true_branch = build_CART_tree<split_function>(std::move(true_rows), depth-1, max_buckets);
+    Node *false_branch = build_CART_tree<split_function>(std::move(false_rows), depth-1, max_buckets);
     return DecisionNodeContinuous(false_branch, true_branch, question);
 }
 
 template<void (*split_function)(Rows &, float &, Question &, int, bool)>
-Node *build_C45_tree(Rows &rows, int depth, int max_buckets) {
+Node *build_C45_tree(Rows &&rows, int depth, int max_buckets) {
     float gain; 
     Question question;
     if (depth == 0) {
@@ -794,7 +796,7 @@ Node *build_C45_tree(Rows &rows, int depth, int max_buckets) {
         if (child_rows.size() == 0) {
             node->children.push_back(Leaf(rows));
         } else {
-            node->children.push_back(build_C45_tree<split_function>(child_rows, depth-1, max_buckets));
+            node->children.push_back(build_C45_tree<split_function>(std::move(child_rows), depth-1, max_buckets));
         }
     }
     return node;
@@ -1063,37 +1065,35 @@ std::vector<float> calcStats(const std::vector<int> &TP, const std::vector<int> 
     return avgs;
 }
 
-Node *train(Rows &data, int max_depth, int max_buckets, bool C45, bool hellinger, bool IGR) {
+Node *train(Rows &&data, int max_depth, int max_buckets, bool C45, bool hellinger, bool IGR) {
     Node *tree;
     if (hellinger) {
         if (C45) {
             fprintf(stderr, "Building C4.5 (HD) tree...\n");
-            tree = build_C45_tree<find_best_split_C45_hellinger>(data, max_depth, max_buckets);
+            tree = build_C45_tree<find_best_split_C45_hellinger>(std::move(data), max_depth, max_buckets);
         } else {
             fprintf(stderr, "Building CART (HD) tree...\n");
-            tree = build_CART_tree<find_best_split_hellinger>(data, max_depth, max_buckets);
+            tree = build_CART_tree<find_best_split_hellinger>(std::move(data), max_depth, max_buckets);
         }
-        //tree = build_hellinger_tree(data, max_depth, max_buckets);
     } else {
         if (C45) {
             if (IGR) {
                 fprintf(stderr, "Building C4.5 (IGR) decision tree...\n");
-                tree = build_C45_tree<find_best_split_C45<true>>(data, max_depth, max_buckets);
+                tree = build_C45_tree<find_best_split_C45<true>>(std::move(data), max_depth, max_buckets);
             } else {
                 fprintf(stderr, "Building C4.5 (IG) decision tree...\n");
-                tree = build_C45_tree<find_best_split_C45<false>>(data, max_depth, max_buckets);
+                tree = build_C45_tree<find_best_split_C45<false>>(std::move(data), max_depth, max_buckets);
             }
         } else {
             fprintf(stderr, "Building CART (Gini) decision tree...\n");
-            tree = build_CART_tree<find_best_split_indian>(data, max_depth, max_buckets);
-            //tree = build_decision_tree(data, max_depth, max_buckets);
+            tree = build_CART_tree<find_best_split_google>(std::move(data), max_depth, max_buckets);
         }
     }
     return tree;
 }
 
 std::vector<float> test(const Rows &data, Node *tree, bool C45) {
-    print_tree(tree, C45);
+    //print_tree(tree, C45);
     std::vector<int> TP(classes.size()), TN(classes.size()), FP(classes.size()), FN(classes.size());
     std::vector<std::vector<float>> probs;
     for (const auto &row: data) {
@@ -1126,7 +1126,7 @@ void cv_thread_runner(const Rows &data, int size, int passed, int max_depth, int
             training_data[tr++] = data[i];
         }
     }
-    Node *tree = train(training_data, max_depth, max_buckets, C45, hellinger, IGR);
+    Node *tree = train(std::move(training_data), max_depth, max_buckets, C45, hellinger, IGR);
 
     avgs = test(testing_data, tree, C45);
 }
