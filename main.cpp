@@ -1150,7 +1150,6 @@ std::vector<float> RF_AB_test(const Rows &data, Node* tree, bool C45, std::vecto
         }
         ct++;
     }
-    //totalError = totalError/std::accumulate(weights.begin(), weights.end(), 0);
     float ammountOfSay = 0.5 * log((1 - totalError)/totalError);
     float totalProb = 0;
     for(int i = 0; i < int(data.size()); ++i){
