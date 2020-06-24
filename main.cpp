@@ -1044,9 +1044,8 @@ std::vector<float> calcStats(const std::vector<int> &TP, const std::vector<int> 
     std::vector<float (*)(int, int, int, int)> measures = {
         accuracy, BA, fMeasure, MCC
     };
-    fprintf(stderr, "\t\tACC\t\tBA\t\tF-1\t\tMCC\t\tAUC\n");
     const auto weights = class_weights(probs);
-    std::vector<float> avgs(5);
+    std::vector<float> avgs(6);
     for (int cl = 0; cl < (int)classes.size(); ++cl) {
         //fprintf(stderr, "%8s:\t", classes[cl].c_str());
         for (int m = 0; m < (int)measures.size(); ++m) {
@@ -1058,12 +1057,12 @@ std::vector<float> calcStats(const std::vector<int> &TP, const std::vector<int> 
         avgs[measures.size()] += cur*weights[cl];
         //fprintf(stderr, "%8.6f\n", cur);
     }
-    fprintf(stderr, " Average:\t");
+    fprintf(stdout, " Average:\t");
     for (int m = 0; m < (int)measures.size(); ++m) {
         avgs[m] /= classes.size();
-        fprintf(stderr, "%8.6f\t", avgs[m]);
+        fprintf(stdout, "%8.6f\t", avgs[m]);
     }
-    fprintf(stderr, "%8.6f\n", avgs[measures.size()]);
+    fprintf(stdout, "%8.6f\n", avgs[measures.size()]);
     return avgs;
 }
 
@@ -1071,7 +1070,7 @@ Node *train(Rows &&data, int max_depth, int max_buckets, bool C45, bool hellinge
     Node *tree;
     if (hellinger) {
         if (C45) {
-            //fprintf(stderr, "Building C4.5 (HD) tree...\n");
+            fprintf(stderr, "Building C4.5 (HD) tree...\n");
             tree = build_C45_tree<find_best_split_C45_hellinger>(std::move(data), max_depth, max_buckets);
         } else {
             fprintf(stderr, "Building CART (HD) tree...\n");
@@ -1131,6 +1130,42 @@ void cv_thread_runner(const Rows &data, int size, int passed, int max_depth, int
 
     avgs = test(testing_data, tree, C45);
 }
+
+std::vector<float> RF_AB_test2(const Rows &data, std::vector<Node*> &trees, bool C45, int M) {
+    std::vector<int> TP(classes.size()), TN(classes.size()), FP(classes.size()), FN(classes.size());
+    std::vector<std::vector<float>> probs;
+    int sizeRow = classes.size();
+    for (const auto &row: data) {
+        int actual = row.first.back();
+        probs.emplace_back(sizeRow, 0);
+        for (const auto &tree: trees) {
+            auto curClassify = classify(row, tree, C45);
+            for(int i = 0; i < sizeRow; ++i){
+                probs.back()[i] += curClassify[i];
+            }
+        }
+        for(int i = 0; i < sizeRow; ++i){
+            probs.back()[i] /= M;
+        }
+
+        
+
+        int prediction = std::max_element(probs.back().begin(), probs.back().end())-probs.back().begin();
+        probs.back().push_back((int)row.first.back());
+
+        for (int cl = 0; cl < (int)classes.size(); ++cl) {
+            if (prediction == actual) {
+                if (prediction == cl) ++TP[cl];
+                else ++TN[cl];
+            } else {
+                if (prediction == cl) ++FP[cl];
+                else ++FN[cl];
+            }
+        }
+    }
+    return calcStats(TP, TN, FP, FN, probs);
+}
+
 std::vector<float> RF_AB_test(const Rows &data, Node* tree, bool C45, std::vector<float> weights) {
     std::vector<int> TF(data.size());
     std::vector<std::vector<float>> probs;
@@ -1185,21 +1220,19 @@ void RF_AB_thread_runner(const Rows &data, int size, int passed, int max_depth, 
     //RF
     int sizeBag = (data.size()-size) - ((data.size()-size) * (1 - SB));
     Node* tree = nullptr;
+    std::vector<Node*> trees;
     for(int i = 0; i < M; ++i){
         Rows bag_data(sizeBag);
-
         std::default_random_engine generator;
     	std::discrete_distribution<int> distribution(training_weights.begin(), training_weights.end());
-
     	std::vector<int> indices(bag_data.size());
     	std::generate(indices.begin(), indices.end(), [&generator, &distribution]() { return distribution(generator); });
-
     	std::transform(indices.begin(), indices.end(), bag_data.begin(), [&training_data](int index) { return training_data[index]; });
-        
         tree = train(std::move(bag_data), max_depth, max_buckets, C45, hellinger, IGR);
+        trees.push_back(tree);
         training_weights = RF_AB_test(training_data, tree, C45, training_weights);
     }
-    avgs = test(testing_data, tree, C45);
+    avgs = RF_AB_test2(testing_data, trees, C45, M);
 }
 
 std::vector<float> RF_B_test(const Rows &data, std::vector<Node*> &trees, bool C45, int M) {
@@ -1281,7 +1314,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "-mt\t\tWhen doing crossvalidation, use one thread per fold\n");
         fprintf(stderr, "-RF\t\tUse random forest for testing\n");
         fprintf(stderr, "-BG <num1> <num2>\t\tWhen doing random forest, use bagging with <num1> bags with <num2>%% of training data\n");
-        fprintf(stderr, "-BG <num1> <num2>\t\tWhen doing random forest, use adaboost with <num1> bags with <num2>%% of training data\n");
+        fprintf(stderr, "-AB <num1> <num2>\t\tWhen doing random forest, use adaboost with <num1> bags with <num2>%% of training data\n");
         return 0;
     }
     int seed = 69;
@@ -1401,7 +1434,7 @@ int main(int argc, char **argv) {
     std::srand(seed);
     Rows data;
     getData(filestem, data);
-
+    fprintf(stdout, "\t\tACC\t\tBA\t\tF-1\t\tMCC\t\tAUC\n");
     if (cv) {
         std::vector<float> avg(5);
         std::vector<std::vector<float>> avgs;
@@ -1409,43 +1442,63 @@ int main(int argc, char **argv) {
         for (int run = 0; run < numTimes; ++run) {
             std::random_shuffle(data.begin(), data.end());
             int passed = 0;
-            //std::vector<std::thread> ts(numFolds);
+            std::vector<std::thread> ts(numFolds);
             for (int fold = 0; fold < numFolds; ++fold) {
                 int size = data.size()/numFolds;
                 if (fold == numFolds-1) size += data.size()%numFolds;
-                //printf("Run: %d; Fold: %d %d %d\n", run, fold, data.size(), size);
-                if (multithread) {
-                    //ts[fold] = std::thread(cv_thread_runner, std::cref(data), size, passed, max_depth, max_buckets, C45, hellinger, IGR, std::ref(avgs[fold]));
+                fprintf(stderr, "Run: %d; Fold: %d %zu %d\n", run, fold, data.size(), size);
+                if (RF) {
+                    if (bagging) {
+                        RF_B_thread_runner(data, size, passed, max_depth, max_buckets, C45, hellinger, IGR, avgs[fold], number_of_bags, size_of_bag);
+                    } else if (adaboost) {
+                        RF_AB_thread_runner(data, size, passed, max_depth, max_buckets, C45, hellinger, IGR, avgs[fold], number_of_bags, size_of_bag);
+                    }
                 } else {
-                    cv_thread_runner(data, size, passed, max_depth, max_buckets, C45, hellinger, IGR, avgs[fold]);
+                    if (multithread) {
+                        ts[fold] = std::thread(cv_thread_runner, std::cref(data), size, passed, max_depth, max_buckets, C45, hellinger, IGR, std::ref(avgs[fold]));
+                    } else {
+                        cv_thread_runner(data, size, passed, max_depth, max_buckets, C45, hellinger, IGR, avgs[fold]);
+                    }
                 }
                 passed += size;
             }
             for (int fold = 0; fold < numFolds; ++fold) {
-                //if (multithread) ts[fold].join();
+                if (multithread) ts[fold].join();
                 for (int k = 0; k < (int)avgs[fold].size(); ++k) {
                     avg[k] += avgs[fold][k];
                 }
             }
         }
-        fprintf(stderr, "\nTot.AVG:\t");
+        fprintf(stdout, "\nTot.AVG:\t");
         for (float e: avg) {
-            fprintf(stderr, "%8.6f\t", e/(numFolds*numTimes));
+            fprintf(stdout, "%8.6f\t", e/(numFolds*numTimes));
         }
     } else {
         if (shuffle) std::random_shuffle(data.begin(), data.end());
         int testCount = data.size()*(1-train_to_test_ratio);
         std::vector<float> avgs;
         if(RF){
-        	if(bagging){
+        	if (bagging) {
         		RF_B_thread_runner(data, testCount, 0, max_depth, max_buckets, C45, hellinger, IGR, avgs, number_of_bags, size_of_bag);
-        	}else if(adaboost){
+        	} else if (adaboost) {
         		RF_AB_thread_runner(data, testCount, 0, max_depth, max_buckets, C45, hellinger, IGR, avgs, number_of_bags, size_of_bag);
         	}
         
-        }else cv_thread_runner(data, testCount, 0, max_depth, max_buckets, C45, hellinger, IGR, avgs);
+        } else {
+            cv_thread_runner(data, testCount, 0, max_depth, max_buckets, C45, hellinger, IGR, avgs);
+        }
     }
-    printf("\n");
+    float E = 0, V = 0;
+    auto hist = class_histogram(data);
+    for (int cl = 0; cl < (int)hist.size(); ++cl) {
+        E += hist[cl];
+    }
+    E /= hist.size();
+    for (int cl = 0; cl < (int)hist.size(); ++cl) {
+        V += Utils::sqr(hist[cl] - E);
+    }
+    V = sqrt(V/hist.size()-1);
+    printf("\nTot.Cv:\t%8.6f\n", V/E);
     END_SESSION();
     return 0;
 }
